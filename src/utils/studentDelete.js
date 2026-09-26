@@ -16,6 +16,7 @@ export const deleteStudentCompletely = async (db, student) => {
 
   // 1. Delete student from 'users' collection
   batch.delete(doc(db, 'users', uid));
+  batch.delete(doc(db, 'students data', uid));
 
   // 2. Delete studentLookup records if known
   if (typeof student === 'object' && student !== null) {

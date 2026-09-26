@@ -124,9 +124,9 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
       const deptId = departmentId === '__custom__' ? `custom_${Date.now()}` : departmentId || 'general';
 
       // Firestore batches are limited to 500 operations.
-      // Each student produces 3 docs: users/{studentId}, studentLookup/{sif}, studentLookup/{mobile}
-      // So batch size of 150 students = 450 ops (well below 500 limit).
-      const CHUNK_SIZE = 150;
+      // Each student produces up to 4 docs: users, students data, SIF lookup, mobile lookup.
+      // Keep each batch below Firestore's 500-write limit.
+      const CHUNK_SIZE = 120;
       let processed = 0;
 
       for (let i = 0; i < validStudents.length; i += CHUNK_SIZE) {
@@ -136,6 +136,7 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
         for (const student of chunk) {
           const studentId = `std_${student.sifNumber.toLowerCase()}_${student.mobileNumber}`;
           const studentDocRef = doc(db, 'users', studentId);
+          const studentDataRef = doc(db, 'students data', studentId);
 
           const studentData = {
             uid: studentId,
@@ -161,6 +162,7 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
           };
 
           batch.set(studentDocRef, studentData, { merge: true });
+          batch.set(studentDataRef, studentData, { merge: true });
 
           // Lookup by SIF Number
           if (student.sifNumber) {
@@ -568,4 +570,3 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
 };
 
 export default ImportStudentsModal;
-

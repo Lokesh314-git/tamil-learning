@@ -31,6 +31,9 @@ service cloud.firestore {
 
     // Students cannot read or modify lookup credentials; administrators can maintain them.
     match /studentLookup/{identifier} { allow read, write: if isAdmin(); }
+    match /{collectionName}/{studentId} {
+      allow read, write: if collectionName == 'students data' && isAdmin();
+    }
 
     match /users/{userId} {
       allow read: if isAdmin() || (signedIn() && request.auth.uid == userId);

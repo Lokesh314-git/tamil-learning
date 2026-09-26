@@ -223,6 +223,7 @@ const StudentsPage = () => {
       };
       const batch = writeBatch(db);
       batch.set(userRef, studentData);
+      batch.set(doc(db, 'students data', userRef.id), studentData);
       identifierRefs.forEach((lookupRef) => {
         batch.set(lookupRef, {
           studentId: userRef.id,
@@ -262,14 +263,18 @@ const StudentsPage = () => {
 
     setError('');
     setMessage('');
-    await updateDoc(doc(db, 'users', uid), {
+    const approvalPatch = {
       isApproved: true,
       approved: true,
       status: 'active',
       approvedAt: serverTimestamp(),
       approvedBy: currentUser?.uid || null,
       updatedAt: serverTimestamp(),
-    });
+    };
+    const approvalBatch = writeBatch(db);
+    approvalBatch.update(doc(db, 'users', uid), approvalPatch);
+    approvalBatch.set(doc(db, 'students data', uid), { ...student, ...approvalPatch, uid, role: 'student' }, { merge: true });
+    await approvalBatch.commit();
     updateStudentInState(uid, { isApproved: true, approved: true, status: 'active' });
     setMessage('Student approved successfully.');
   };
@@ -300,13 +305,17 @@ const StudentsPage = () => {
 
     setError('');
     setMessage('');
-    await updateDoc(doc(db, 'users', uid), {
+    const restorePatch = {
       isDeleted: false,
       status: 'active',
       isApproved: true,
       approved: true,
       updatedAt: serverTimestamp(),
-    });
+    };
+    const restoreBatch = writeBatch(db);
+    restoreBatch.update(doc(db, 'users', uid), restorePatch);
+    restoreBatch.set(doc(db, 'students data', uid), { ...student, ...restorePatch, uid, role: 'student' }, { merge: true });
+    await restoreBatch.commit();
     updateStudentInState(uid, { isDeleted: false, status: 'active', isApproved: true, approved: true });
     setMessage('Student restored successfully.');
   };

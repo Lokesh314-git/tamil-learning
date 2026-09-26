@@ -81,11 +81,20 @@ exports.studentLoginWithCredentials = onCall({
       const data = lookup.data();
       const uid = data.studentId || data.uid || data.id;
       if (uid) {
+        const studentDataDoc = await db.doc(`students data/${uid}`).get();
+        if (studentDataDoc.exists) { student = { uid, ...studentDataDoc.data() }; break; }
         const userDoc = await db.doc(`users/${uid}`).get();
         if (userDoc.exists) { student = { uid, ...userDoc.data() }; break; }
       }
       student = { ...data, uid };
       break;
+    }
+  }
+  if (!student) {
+    for (const [field, value] of [['sifNumber', sif], ['mobileNumber', mobile]]) {
+      if (!value) continue;
+      const result = await db.collection('students data').where(field, '==', value).limit(1).get();
+      if (!result.empty) { student = { uid: result.docs[0].id, ...result.docs[0].data() }; break; }
     }
   }
   if (!student) {
@@ -265,6 +274,7 @@ exports.permanentDeleteStudent = onCall(
     const db = admin.firestore();
     const batch = db.batch();
     batch.delete(db.doc(`users/${uid}`));
+    batch.delete(db.doc(`students data/${uid}`));
 
     const collectionsToClean = ['results', 'reports', 'notes', 'submissions', 'taskSubmissions'];
     for (const colName of collectionsToClean) {
