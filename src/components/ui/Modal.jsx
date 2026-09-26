@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 /**
@@ -68,7 +69,7 @@ const Modal = ({
 
   const sizeClass = `modal-${size}`;
 
-  return (
+  return createPortal((
     <div
       onClick={(e) => {
         if (closeOnOutsideClick && e.target === e.currentTarget) {
@@ -125,7 +126,7 @@ const Modal = ({
         )}
       </div>
     </div>
-  );
+  ), document.body);
 };
 
 export default Modal;

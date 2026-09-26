@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   collection,
   doc,
@@ -363,7 +364,7 @@ const AdminClassesPage = () => {
       )}
 
       {/* Class Create / Edit Modal */}
-      {classModalOpen && (
+      {classModalOpen && createPortal((
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setClassModalOpen(false); }}>
           <div className="modal" style={{ maxWidth: 540 }}>
             <div className="modal-header">
@@ -446,10 +447,10 @@ const AdminClassesPage = () => {
             </form>
           </div>
         </div>
-      )}
+      ), document.body)}
 
       {/* Promotion Modal */}
-      {promoteModalOpen && (
+      {promoteModalOpen && createPortal((
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setPromoteModalOpen(false); }}>
           <div className="modal" style={{ maxWidth: 540 }}>
             <div className="modal-header">
@@ -509,7 +510,7 @@ const AdminClassesPage = () => {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
 
       {/* Delete Confirmation Modal */}
       <ConfirmDeleteModal
