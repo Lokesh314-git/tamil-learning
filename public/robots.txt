@@ -1,0 +1,4 @@
+﻿User-agent: *
+Allow: /
+
+Sitemap: https://tamillearning2024-sys.github.io/Tamil/sitemap.xml
