@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDocs, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth, db } from '../../firebase';
 import AddStudentModal from '../../components/AddStudentModal';
 import ImportStudentsModal from '../../components/ImportStudentsModal';
 import StudentTable from '../../components/StudentTable';
-import { useCreateStudent } from '../../hooks/useCreateStudent';
 import Loader from '../../components/Loader';
 import { useAuth } from '../../context/AuthContext';
 import { YEARS, sortDepartmentsByName } from '../../utils/departments';
@@ -13,6 +12,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import Modal from '../../components/ui/Modal';
 import { FileSpreadsheet, Upload, UserCheck, Users, Edit3, UserPlus } from 'lucide-react';
 import { deleteStudentCompletely } from '../../utils/studentDelete';
+import { normalizeDob, normalizeMobile, normalizeSif } from '../../utils/studentImport';
 
 const StudentsPage = () => {
   const [students, setStudents] = useState([]);
@@ -42,7 +42,8 @@ const StudentsPage = () => {
 
   const load = () => {};
 
-  const { createStudent, loading: creating, error: createError } = useCreateStudent();
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
   const { user: currentUser } = useAuth();
 
   const yearOptions = ['All', ...YEARS];
@@ -170,26 +171,89 @@ const StudentsPage = () => {
 
   const handleCreate = async (payload) => {
     setError('');
+    setCreateError('');
     setMessage('');
-    const createdUser = await createStudent(payload);
-    await setDoc(doc(db, 'users', createdUser.uid), {
-      uid: createdUser.uid,
-      name: (payload.name || '').trim(),
-      email: (payload.email || '').trim().toLowerCase(),
-      role: 'student',
-      year: payload.year,
-      departmentId: payload.departmentId,
-      departmentName: payload.departmentName,
-      status: 'pending',
-      isApproved: false,
-      approved: false,
-      isDeleted: false,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
-    setModalOpen(false);
-    setMessage('Student account created with pending approval. Verification email sent.');
-    await load();
+    setCreating(true);
+    try {
+      const sifNumber = normalizeSif(payload.sifNumber);
+      const mobileNumber = normalizeMobile(payload.mobileNumber);
+      const dob = normalizeDob(payload.dob);
+      if (!sifNumber && !mobileNumber) throw new Error('Enter a SIF number or mobile number for student login.');
+      if (mobileNumber && mobileNumber.length !== 10) throw new Error('Mobile number must contain 10 digits.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) throw new Error('Enter a valid date of birth.');
+      const [dobYear, dobMonth, dobDay] = dob.split('-').map(Number);
+      const parsedDob = new Date(Date.UTC(dobYear, dobMonth - 1, dobDay));
+      if (parsedDob.getUTCFullYear() !== dobYear || parsedDob.getUTCMonth() !== dobMonth - 1 || parsedDob.getUTCDate() !== dobDay) {
+        throw new Error('Enter a valid date of birth.');
+      }
+
+      const identifierRefs = [...new Set([sifNumber, mobileNumber].filter(Boolean))]
+        .map((identifier) => doc(db, 'studentLookup', identifier));
+      for (const lookupRef of identifierRefs) {
+        const lookupSnap = await getDoc(lookupRef);
+        if (lookupSnap.exists()) {
+          throw new Error(`The SIF/mobile number ${lookupRef.id} is already assigned to a student.`);
+        }
+      }
+
+      const userRef = doc(collection(db, 'users'));
+      const status = ['active', 'blocked', 'graduated'].includes(payload.status) ? payload.status : 'active';
+      const approved = status === 'active';
+      const studentData = {
+        uid: userRef.id,
+        name: (payload.name || '').trim(),
+        email: (payload.email || '').trim().toLowerCase(),
+        sifNumber,
+        mobileNumber,
+        dob,
+        rollNumber: (payload.rollNumber || '').trim(),
+        registerNumber: (payload.rollNumber || '').trim(),
+        role: 'student',
+        year: payload.year,
+        departmentId: payload.departmentId,
+        departmentName: payload.departmentName,
+        class: payload.departmentName,
+        section: (payload.section || 'A').trim().toUpperCase(),
+        status,
+        isApproved: approved,
+        approved,
+        isDeleted: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      const batch = writeBatch(db);
+      batch.set(userRef, studentData);
+      identifierRefs.forEach((lookupRef) => {
+        batch.set(lookupRef, {
+          studentId: userRef.id,
+          sifNumber,
+          mobileNumber,
+          dob,
+          name: studentData.name,
+          rollNumber: studentData.rollNumber,
+          role: 'student',
+          status,
+          isApproved: approved,
+          approved,
+          isDeleted: false,
+          year: studentData.year,
+          departmentId: studentData.departmentId,
+          departmentName: studentData.departmentName,
+          section: studentData.section,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      await batch.commit();
+      setModalOpen(false);
+      setMessage(status === 'active'
+        ? 'Student added and can now sign in with SIF/mobile number and date of birth.'
+        : `Student added with ${status} status; sign-in is disabled until the account is active.`);
+      await load();
+    } catch (err) {
+      setCreateError(err?.message || 'Failed to add student.');
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleApprove = async (student) => {

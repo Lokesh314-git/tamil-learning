@@ -99,7 +99,7 @@ export const normalizeMobile = (value) => {
  */
 export const normalizeSif = (value) => {
   if (!value) return '';
-  return String(value).trim().toUpperCase();
+  return String(value).trim().toUpperCase().replace(/\s+/g, '');
 };
 
 /**

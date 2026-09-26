@@ -98,11 +98,11 @@ exports.studentLoginWithCredentials = onCall({
   if (!student?.uid || normalizeDobServer(student.dob) !== dob) {
     throw new HttpsError('unauthenticated', 'Student ID or date of birth is incorrect.');
   }
-  if (student.role !== 'student' || student.isDeleted === true || ['deleted', 'blocked', 'rejected'].includes(student.status)) {
+  if (student.role !== 'student' || student.isDeleted === true || ['pending', 'deleted', 'blocked', 'rejected', 'graduated'].includes(student.status)) {
     throw new HttpsError('permission-denied', 'This student account is unavailable. Contact the administrator.');
   }
-  if (student.status === 'pending' || (student.isApproved === false && student.approved === false)) {
-    throw new HttpsError('permission-denied', 'This student account is waiting for administrator approval.');
+  if (!(student.isApproved === true || student.approved === true || student.status === 'active')) {
+    throw new HttpsError('permission-denied', 'This student account is not active. Contact the administrator.');
   }
 
   const customToken = await admin.auth().createCustomToken(String(student.uid), { role: 'student' });

@@ -100,7 +100,7 @@ const AddStudentModal = ({
     const payload = {
       ...form,
       name: form.name.trim(),
-      email: form.email.trim() || `${form.sifNumber.trim() || form.mobileNumber.trim()}@student.app`,
+      email: form.email.trim(),
       sifNumber: form.sifNumber.trim().toUpperCase(),
       mobileNumber: form.mobileNumber.trim().replace(/\D/g, ''),
       rollNumber: form.rollNumber.trim(),
