@@ -756,6 +756,107 @@ textarea.input { resize: vertical; min-height: 80px; }
   justify-content: space-between;
 }
 .modal-footer .btn, .modal-actions .btn { min-height: 40px; }
+
+/* Class and department editor */
+.class-dialog-backdrop { z-index: 1000; padding: clamp(12px, 3vh, 28px); }
+.class-dialog {
+  width: min(100%, 650px);
+  max-height: min(92dvh, 780px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #dbe4f0;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, .28);
+  animation: modalSlideUp .24s cubic-bezier(.16, 1, .3, 1);
+}
+.class-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 26px 30px 22px;
+  border-bottom: 1px solid #e8edf5;
+  background: linear-gradient(135deg, #f8faff, #fff 72%);
+}
+.class-dialog-heading { display: flex; align-items: flex-start; gap: 15px; min-width: 0; }
+.class-dialog-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #eff6ff;
+  color: #2563eb;
+}
+.class-dialog-eyebrow { margin: 1px 0 5px; color: #2563eb; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.class-dialog-header h3 { margin: 0; color: #111827; font-size: 22px; font-weight: 800; letter-spacing: -.025em; line-height: 1.25; }
+.class-dialog-subtitle { margin: 6px 0 0; color: #64748b; font-size: 13px; line-height: 1.5; }
+.class-dialog-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  transition: background .16s, color .16s, border-color .16s;
+}
+.class-dialog-close:hover { border-color: #cbd5e1; background: #f1f5f9; color: #0f172a; }
+.class-dialog-form { min-height: 0; display: flex; flex: 1; flex-direction: column; }
+.class-dialog-body { min-height: 0; overflow-y: auto; padding: 25px 30px; }
+.class-dialog-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 21px 18px; }
+.class-dialog-field { min-width: 0; }
+.class-dialog-field-wide { grid-column: 1 / -1; }
+.class-dialog-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.class-dialog-label { display: block; margin-bottom: 8px; color: #1e293b; font-size: 13px; font-weight: 750; }
+.class-dialog-label span { margin-left: 6px; color: #94a3b8; font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
+.class-dialog-hint { color: #94a3b8; font-size: 11px; }
+.class-dialog-input { min-height: 48px !important; border-radius: 11px !important; }
+.class-dialog-input:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 4px rgba(59, 130, 246, .13) !important; }
+.class-dialog-textarea { min-height: 104px !important; line-height: 1.5; }
+.class-section-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.class-section-option {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 11px;
+  background: #fff;
+  color: #475569;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color .16s, background .16s, color .16s, transform .16s;
+}
+.class-section-option:hover { transform: translateY(-1px); border-color: #93c5fd; background: #f8fbff; }
+.class-section-option.is-selected { border-color: #3b82f6; background: #eff6ff; color: #1d4ed8; box-shadow: inset 0 0 0 1px #3b82f6; }
+.class-section-option:focus-visible, .class-dialog-close:focus-visible { outline: 3px solid rgba(59, 130, 246, .35); outline-offset: 2px; }
+.class-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px 30px;
+  border-top: 1px solid #e8edf5;
+  background: #fbfcfe;
+}
+.class-dialog-footer-note { color: #94a3b8; font-size: 11px; }
+.class-dialog-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.class-dialog-actions .btn { min-height: 42px; padding-inline: 18px; }
+.class-dialog-submit { min-width: 132px; box-shadow: 0 5px 12px rgba(37, 99, 235, .2); }
+
 .modal-body .grid { min-width: 0; }
 .modal-body .grid > *, .modal-body .form-group { min-width: 0; }
 .modal-body .input, .modal-body .form-control { box-sizing: border-box; width: 100%; min-height: 42px; font: inherit; }
@@ -1983,4 +2084,17 @@ textarea.input { resize: vertical; min-height: 80px; }
   .profile-banner .profile-sub, .profile-badges { justify-content: center; }
   .topbar, .app-header { padding: 0 14px; }
   .modal-body, .modal-footer, .modal-header { padding: 16px; }
+  .class-dialog { max-height: 94dvh; border-radius: 18px; }
+  .class-dialog-header { padding: 20px 18px 17px; gap: 12px; }
+  .class-dialog-heading { gap: 11px; }
+  .class-dialog-icon { flex-basis: 40px; width: 40px; height: 40px; border-radius: 12px; }
+  .class-dialog-header h3 { font-size: 19px; }
+  .class-dialog-subtitle { font-size: 12px; }
+  .class-dialog-body { padding: 20px 18px; }
+  .class-dialog-fields { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .class-dialog-field-wide { grid-column: auto; }
+  .class-dialog-footer { padding: 14px 18px; }
+  .class-dialog-footer-note { display: none; }
+  .class-dialog-actions { width: 100%; }
+  .class-dialog-actions .btn { flex: 1; padding-inline: 12px; }
 }

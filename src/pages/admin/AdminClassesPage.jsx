@@ -19,7 +19,7 @@ import { YEARS, sortDepartmentsByName } from '../../utils/departments';
 import Loader from '../../components/Loader';
 import EmptyState from '../../components/EmptyState';
 import ConfirmDeleteModal from '../../components/ConfirmDeleteModal';
-import { GraduationCap, Plus, Users, ArrowUpRight, BookOpen, Layers, Edit, Trash2, CheckCircle2 } from 'lucide-react';
+import { GraduationCap, Plus, Users, ArrowUpRight, BookOpen, Layers, Edit, Trash2, CheckCircle2, X } from 'lucide-react';
 
 const SECTIONS = ['A', 'B', 'C', 'D'];
 
@@ -365,87 +365,94 @@ const AdminClassesPage = () => {
 
       {/* Class Create / Edit Modal */}
       {classModalOpen && createPortal((
-        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setClassModalOpen(false); }}>
-          <div className="modal" style={{ maxWidth: 540 }}>
-            <div className="modal-header">
-              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#0f172a' }}>
-                {editingClass ? 'Edit Class' : 'Create New Class'}
-              </h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setClassModalOpen(false)}>✕</button>
-            </div>
-
-            <form onSubmit={handleSaveClass}>
-              <div className="modal-body">
+        <div className="modal-backdrop class-dialog-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setClassModalOpen(false); }}>
+          <section className="class-dialog" role="dialog" aria-modal="true" aria-labelledby="class-dialog-title">
+            <header className="class-dialog-header">
+              <div className="class-dialog-heading">
+                <span className="class-dialog-icon"><BookOpen size={22} /></span>
                 <div>
-                  <label className="form-label">Class / Department Name *</label>
-                  <input
-                    className="input"
-                    placeholder="e.g. B.A. Tamil, M.A. Tamil, B.Sc"
-                    value={formName}
-                    onChange={(e) => setFormName(e.target.value)}
-                    required
-                    autoFocus
-                  />
+                  <p className="class-dialog-eyebrow">Academic management</p>
+                  <h3 id="class-dialog-title">{editingClass ? 'Edit class' : 'Create a class'}</h3>
+                  <p className="class-dialog-subtitle">Set up a department, academic year, and its sections.</p>
                 </div>
+              </div>
+              <button type="button" className="class-dialog-close" onClick={() => setClassModalOpen(false)} aria-label="Close dialog">
+                <X size={19} />
+              </button>
+            </header>
 
-                <div>
-                  <label className="form-label">Academic Year *</label>
-                  <select className="input" value={formYear} onChange={(e) => setFormYear(e.target.value)}>
-                    {YEARS.map((y) => (
-                      <option key={y} value={y}>{y}</option>
-                    ))}
-                  </select>
-                </div>
+            <form className="class-dialog-form" onSubmit={handleSaveClass}>
+              <div className="class-dialog-body">
+                <div className="class-dialog-fields">
+                  <div className="class-dialog-field class-dialog-field-wide">
+                    <label className="class-dialog-label" htmlFor="class-name">Class or department name <span>Required</span></label>
+                    <input
+                      id="class-name"
+                      className="input class-dialog-input"
+                      placeholder="e.g. B.A. Tamil, M.A. Tamil, B.Sc"
+                      value={formName}
+                      onChange={(e) => setFormName(e.target.value)}
+                      required
+                      autoFocus
+                    />
+                  </div>
 
-                <div>
-                  <label className="form-label">Sections Available</label>
-                  <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
-                    {SECTIONS.map((sec) => {
-                      const active = formSections.includes(sec);
-                      return (
-                        <button
-                          key={sec}
-                          type="button"
-                          onClick={() => toggleSection(sec)}
-                          style={{
-                            padding: '8px 16px',
-                            borderRadius: 8,
-                            border: active ? '2px solid var(--color-primary)' : '1px solid #cbd5e1',
-                            background: active ? '#eff6ff' : '#ffffff',
-                            color: active ? 'var(--color-primary)' : '#475569',
-                            fontWeight: 700,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Section {sec} {active && '✓'}
-                        </button>
-                      );
-                    })}
+                  <div className="class-dialog-field">
+                    <label className="class-dialog-label" htmlFor="class-year">Academic year <span>Required</span></label>
+                    <select id="class-year" className="input class-dialog-input" value={formYear} onChange={(e) => setFormYear(e.target.value)}>
+                      {YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
+                    </select>
+                  </div>
+
+                  <div className="class-dialog-field class-dialog-field-wide">
+                    <div className="class-dialog-label-row">
+                      <label className="class-dialog-label" id="class-sections-label">Sections</label>
+                      <span className="class-dialog-hint">Choose all that apply</span>
+                    </div>
+                    <div className="class-section-options" role="group" aria-labelledby="class-sections-label">
+                      {SECTIONS.map((sec) => {
+                        const active = formSections.includes(sec);
+                        return (
+                          <button
+                            key={sec}
+                            type="button"
+                            onClick={() => toggleSection(sec)}
+                            className={`class-section-option ${active ? 'is-selected' : ''}`}
+                            aria-pressed={active}
+                          >
+                            <span>Section {sec}</span>
+                            {active && <CheckCircle2 size={18} aria-hidden="true" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="class-dialog-field class-dialog-field-wide">
+                    <label className="class-dialog-label" htmlFor="class-description">Description <span>Optional</span></label>
+                    <textarea
+                      id="class-description"
+                      className="input class-dialog-input class-dialog-textarea"
+                      rows={4}
+                      placeholder="Add a short note about the syllabus or department focus"
+                      value={formDescription}
+                      onChange={(e) => setFormDescription(e.target.value)}
+                    />
                   </div>
                 </div>
+              </div>
 
-                <div>
-                  <label className="form-label">Description (Optional)</label>
-                  <textarea
-                    className="input"
-                    rows={3}
-                    placeholder="Brief summary of syllabus or department focus"
-                    value={formDescription}
-                    onChange={(e) => setFormDescription(e.target.value)}
-                  />
+              <footer className="class-dialog-footer">
+                <span className="class-dialog-footer-note">You can update these details later.</span>
+                <div className="class-dialog-actions">
+                  <button type="button" className="btn btn-secondary" onClick={() => setClassModalOpen(false)}>Cancel</button>
+                  <button type="submit" className="btn btn-primary class-dialog-submit" disabled={submitting}>
+                    {submitting ? 'Saving?' : editingClass ? 'Save changes' : 'Create class'}
+                  </button>
                 </div>
-              </div>
-
-              <div className="modal-footer">
-                <button type="button" className="btn btn-secondary" onClick={() => setClassModalOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={submitting}>
-                  {submitting ? 'Saving...' : editingClass ? 'Update Class' : 'Create Class'}
-                </button>
-              </div>
+              </footer>
             </form>
-          </div>
+          </section>
         </div>
       ), document.body)}
 
