@@ -62,6 +62,7 @@ exports.studentLoginWithCredentials = onCall({
     'http://127.0.0.1:5173',
     'https://tamil-learning-2d773.web.app',
     'https://tamil-learning-2d773.firebaseapp.com',
+    'https://lokesh314-git.github.io',
     'https://tamillearning2024-sys.github.io',
   ],
 }, async (request) => {
