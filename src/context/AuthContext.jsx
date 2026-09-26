@@ -327,26 +327,24 @@ export const AuthProvider = ({ children }) => {
   const loginAdmin = async ({ email, password }) => {
     const cleanEmail = normalizeEmail(email);
     const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-    const snap = await getDoc(doc(db, 'users', cred.user.uid));
-    
-    let data;
-    if (!snap.exists()) {
-      // If admin account was created in Firebase Auth without a Firestore record, provision it automatically
-      data = {
-        uid: cred.user.uid,
-        email: cleanEmail,
-        name: cred.user.displayName || 'Administrator',
-        role: 'admin',
-        isApproved: true,
-        approved: true,
-        isDeleted: false,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      await setDoc(doc(db, 'users', cred.user.uid), data, { merge: true });
-    } else {
-      data = snap.data();
+    let snap;
+    try {
+      snap = await getDoc(doc(db, 'users', cred.user.uid));
+    } catch (cause) {
+      await signOut(auth).catch(() => {});
+      const error = new Error('Could not read the admin profile. Check Firestore access rules and try again.');
+      error.code = cause?.code === 'permission-denied' ? 'admin-profile-permission-denied' : cause?.code;
+      throw error;
     }
+
+    if (!snap.exists()) {
+      await signOut(auth).catch(() => {});
+      const error = new Error(`No admin profile exists for Firebase Auth UID ${cred.user.uid}. A project owner must create users/${cred.user.uid} with role "admin".`);
+      error.code = 'admin-profile-missing';
+      throw error;
+    }
+
+    const data = snap.data();
 
     if (isDeletedAccount(data)) {
       await signOut(auth);
@@ -363,31 +361,6 @@ export const AuthProvider = ({ children }) => {
     setProfile(data);
     return data;
   };
-
-  const createInitialAdmin = async ({ email, password, name }) => {
-    const cleanEmail = normalizeEmail(email);
-    const cleanName = (name || 'Administrator').trim();
-    if (!cleanEmail || !password || password.length < 6) {
-      throw new Error('Password must be at least 6 characters long.');
-    }
-    const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-    await updateProfile(cred.user, { displayName: cleanName });
-    const adminData = {
-      uid: cred.user.uid,
-      email: cleanEmail,
-      name: cleanName,
-      role: 'admin',
-      isApproved: true,
-      approved: true,
-      isDeleted: false,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    await setDoc(doc(db, 'users', cred.user.uid), adminData, { merge: true });
-    setProfile(adminData);
-    return adminData;
-  };
-
 
   const loginStudentWithCredentials = async ({ identifier, dob }) => {
     const rawId = (identifier || '').trim();
@@ -436,7 +409,6 @@ export const AuthProvider = ({ children }) => {
     loginStudent: loginStudentWithCredentials,
     loginStudentWithCredentials,
     loginAdmin,
-    createInitialAdmin,
     resendVerificationEmail,
     logout,
   };
