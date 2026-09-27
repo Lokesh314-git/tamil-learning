@@ -13,7 +13,7 @@ import {
   serverTimestamp as firestoreServerTimestamp,
   writeBatch as firestoreWriteBatch
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 
 const SESSION_KEY = 'tamil_student_session';
 const LEGACY_SESSION_KEY = 'tamil_student_mongo_session';
@@ -160,8 +160,9 @@ export const studentMongoApi = {
 
   async me() {
     const session = readStudentSession();
-    if (!session?.studentId) throw new Error('Session expired.');
-    const docRef = firestoreDoc(db, 'users', session.studentId);
+    const studentUid = session?.studentId || auth.currentUser?.uid;
+    if (!studentUid) throw new Error('Session expired.');
+    const docRef = firestoreDoc(db, 'users', studentUid);
     const snap = await firestoreGetDoc(docRef);
     if (!snap.exists()) throw new Error('Student profile not found.');
     return { id: snap.id, uid: snap.id, ...snap.data() };
@@ -173,8 +174,9 @@ export const studentMongoApi = {
 
   async updateProfile(patch) {
     const session = readStudentSession();
-    if (!session?.studentId) throw new Error('Session expired.');
-    const docRef = firestoreDoc(db, 'users', session.studentId);
+    const studentUid = session?.studentId || auth.currentUser?.uid;
+    if (!studentUid) throw new Error('Session expired.');
+    const docRef = firestoreDoc(db, 'users', studentUid);
     const allowed = ['address', 'parentName', 'parentMobile', 'emergencyContact', 'bloodGroup'];
     const updateData = {};
     for (const key of allowed) {
@@ -187,9 +189,10 @@ export const studentMongoApi = {
 
   async getPreferences() {
     const session = readStudentSession();
-    if (!session?.studentId) return {};
+    const studentUid = session?.studentId || auth.currentUser?.uid;
+    if (!studentUid) return {};
     try {
-      const docRef = firestoreDoc(db, 'student_preferences', session.studentId);
+      const docRef = firestoreDoc(db, 'student_preferences', studentUid);
       const snap = await firestoreGetDoc(docRef);
       return snap.exists() ? snap.data() : {};
     } catch {
@@ -199,12 +202,13 @@ export const studentMongoApi = {
 
   async updatePreferences(patch) {
     const session = readStudentSession();
-    if (!session?.studentId) return;
+    const studentUid = session?.studentId || auth.currentUser?.uid;
+    if (!studentUid) return;
     try {
-      const docRef = firestoreDoc(db, 'student_preferences', session.studentId);
+      const docRef = firestoreDoc(db, 'student_preferences', studentUid);
       await firestoreSetDoc(
         docRef,
-        { ...patch, studentId: session.studentId, updatedAt: firestoreServerTimestamp() },
+        { ...patch, studentId: studentUid, updatedAt: firestoreServerTimestamp() },
         { merge: true }
       );
     } catch (e) {
@@ -212,11 +216,28 @@ export const studentMongoApi = {
     }
   },
 
-  async submitTest(payload) {
+  async submitTest(payload = {}) {
     const session = readStudentSession();
-    const student = session?.student || { uid: session?.studentId, id: session?.studentId };
-    const studentId = student.uid || student.id;
-    const testId = payload.testId;
+    const sessionStudent = session?.student || (session?.studentId ? { uid: session.studentId, id: session.studentId } : null);
+    const authUser = auth.currentUser;
+    const student = payload?.student || payload?.profile || sessionStudent || {};
+
+    const studentId =
+      payload?.studentId ||
+      payload?.userId ||
+      student?.uid ||
+      student?.id ||
+      session?.studentId ||
+      authUser?.uid;
+
+    if (!studentId || studentId === 'undefined') {
+      throw new Error('Student identifier is missing. Please ensure you are logged in before submitting.');
+    }
+
+    const testId = payload?.testId || payload?.testData?.id;
+    if (!testId || testId === 'undefined') {
+      throw new Error('Test identifier is missing.');
+    }
 
     let testData = payload.testData || null;
 
@@ -233,7 +254,7 @@ export const studentMongoApi = {
       }
     }
 
-    const questions = testData?.questions || [];
+    const questions = Array.isArray(testData?.questions) ? testData.questions : [];
     const answers = payload.answers || {};
     let score = 0;
 
@@ -247,7 +268,7 @@ export const studentMongoApi = {
         options: Array.isArray(q.options) ? q.options : [],
         correctAnswer: correctAns,
         studentChoice: selected === undefined ? -1 : Number(selected),
-        isCorrect,
+        isCorrect: Boolean(isCorrect),
         explanation: q.explanation || '',
       };
     });
@@ -275,21 +296,28 @@ export const studentMongoApi = {
 
     const calculatedPercentage = questions.length > 0 ? Math.round((score / questions.length) * 100) : 0;
 
+    const studentName = payload?.studentName || student?.name || student?.displayName || authUser?.displayName || 'Student';
+    const email = payload?.email || student?.email || authUser?.email || '';
+    const sifNumber = payload?.sifNumber || student?.sifNumber || student?.rollNumber || student?.registerNumber || '';
+    const year = payload?.year || student?.year || testData?.year || '';
+    const departmentId = payload?.departmentId || student?.departmentId || testData?.departmentId || '';
+    const departmentName = payload?.departmentName || student?.departmentName || testData?.departmentName || '';
+
     const resultData = {
-      studentId,
-      studentName: student.name || 'Student',
-      email: student.email || '',
-      sifNumber: student.sifNumber || student.rollNumber || '',
-      testId,
-      testTitle: testData?.title || 'Online Assessment',
-      year: student.year || testData?.year || '',
-      departmentId: student.departmentId || '',
-      departmentName: student.departmentName || '',
-      score,
-      totalQuestions: questions.length,
-      total: questions.length,
-      percentage: calculatedPercentage,
-      breakdown,
+      studentId: String(studentId),
+      studentName: String(studentName || 'Student'),
+      email: String(email || ''),
+      sifNumber: String(sifNumber || ''),
+      testId: String(testId),
+      testTitle: String(testData?.title || 'Online Assessment'),
+      year: String(year || ''),
+      departmentId: String(departmentId || ''),
+      departmentName: String(departmentName || ''),
+      score: Number(score) || 0,
+      totalQuestions: Number(questions.length) || 0,
+      total: Number(questions.length) || 0,
+      percentage: Number(calculatedPercentage) || 0,
+      breakdown: Array.isArray(breakdown) ? breakdown : [],
       submittedAt: new Date().toISOString(),
       timeTakenMinutes: Math.max(0, Number(payload.timeTakenMinutes) || 0),
       attemptsCount: prevAttempts + 1,
@@ -305,8 +333,8 @@ export const studentMongoApi = {
     try {
       const qDupes = firestoreQuery(
         firestoreCollection(db, 'results'),
-        firestoreWhere('studentId', '==', studentId),
-        firestoreWhere('testId', '==', testId)
+        firestoreWhere('studentId', '==', String(studentId)),
+        firestoreWhere('testId', '==', String(testId))
       );
       const dupesSnap = await firestoreGetDocs(qDupes);
       dupesSnap.forEach((d) => {

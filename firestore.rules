@@ -2,7 +2,13 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
+    
+    // Helper function to check if user is signed into Firebase Auth
+    function signedIn() { 
+      return request.auth != null; 
+    }
+    
+    // Helper function to check if user is an Administrator
     function isAdmin() {
       return signedIn() && (
         request.auth.token.role == 'admin' ||
@@ -11,49 +17,87 @@ service cloud.firestore {
       );
     }
 
-    // Student / User profiles
+    // -------------------------------------------------------------
+    // 1. User Profiles & Accounts (Admins & Students)
+    // -------------------------------------------------------------
     match /users/{userId} {
+      // Allows student identification lookup during login and admin student management
       allow read: if true;
       allow create: if true;
       allow update: if true;
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || (signedIn() && request.auth.uid == userId);
     }
 
-    // Academic content (Units, Materials, Tests, Tasks, Announcements, Downloads, etc.)
-    match /departments/{id} { allow read: if true; allow write: if true; }
-    match /classes/{id} { allow read: if true; allow write: if true; }
-    match /units/{id} { allow read: if true; allow write: if true; }
-    match /studyMaterials/{id} { allow read: if true; allow write: if true; }
-    match /study_materials/{id} { allow read: if true; allow write: if true; }
-    match /tests/{id} { allow read: if true; allow write: if true; }
-    match /publishedTests/{id} { allow read: if true; allow write: if true; }
-    match /quizzes/{id} { allow read: if true; allow write: if true; }
-    match /tasks/{id} { allow read: if true; allow write: if true; }
-    match /assignments/{id} { allow read: if true; allow write: if true; }
-    match /announcements/{id} { allow read: if true; allow write: if true; }
-    match /thirukkurals/{id} { allow read: if true; allow write: if true; }
-    match /downloads/{id} { allow read: if true; allow write: if true; }
-    match /notifications/{id} { allow read: if true; allow write: if true; }
-    match /settings/{id} { allow read: if true; allow write: if true; }
+    // -------------------------------------------------------------
+    // 2. Academic Curriculum & Course Structure
+    // -------------------------------------------------------------
+    match /departments/{id} { allow read, write: if true; }
+    match /classes/{id} { allow read, write: if true; }
+    match /units/{id} { allow read, write: if true; }
+    match /study_materials/{id} { allow read, write: if true; }
+    match /studyMaterials/{id} { allow read, write: if true; }
+    match /downloads/{id} { allow read, write: if true; }
+    match /thirukkurals/{id} { allow read, write: if true; }
+    match /settings/{id} { allow read, write: if true; }
 
-    // Student interactive collections
-    match /attendance/{id} { allow read, write: if true; }
-    match /results/{id} { allow read, write: if true; }
-    match /testResults/{id} { allow read, write: if true; }
-    match /reports/{id} { allow read, write: if true; }
-    match /notes/{id} { allow read, write: if true; }
+    // -------------------------------------------------------------
+    // 3. Tests, Quizzes & Assessments
+    // -------------------------------------------------------------
+    match /tests/{id} { allow read, write: if true; }
+    match /publishedTests/{id} { allow read, write: if true; }
+    match /quizzes/{id} { allow read, write: if true; }
+
+    // -------------------------------------------------------------
+    // 4. Test Results & Reports
+    // -------------------------------------------------------------
+    match /results/{id} { 
+      allow read, write: if true; 
+    }
+    match /testResults/{id} { 
+      allow read, write: if true; 
+    }
+    match /reports/{id} { 
+      allow read, write: if true; 
+    }
+
+    // -------------------------------------------------------------
+    // 5. Tasks, Assignments & Homework Submissions
+    // -------------------------------------------------------------
+    match /tasks/{id} { allow read, write: if true; }
+    match /assignments/{id} { allow read, write: if true; }
     match /task_submissions/{id} { allow read, write: if true; }
     match /taskSubmissions/{id} { allow read, write: if true; }
+    match /submissions/{id} { allow read, write: if true; }
     match /assignmentSubmissions/{id} { allow read, write: if true; }
+
+    // -------------------------------------------------------------
+    // 6. Communications, Notices & Alerts
+    // -------------------------------------------------------------
+    match /announcements/{id} { allow read, write: if true; }
+    match /notices/{id} { allow read, write: if true; }
+    match /notifications/{id} { allow read, write: if true; }
     match /feedback/{id} { allow read, write: if true; }
+
+    // -------------------------------------------------------------
+    // 7. Student Interactive & Personal Data
+    // -------------------------------------------------------------
+    match /attendance/{id} { allow read, write: if true; }
+    match /notes/{id} { allow read, write: if true; }
     match /student_preferences/{id} { allow read, write: if true; }
     match /preferences/{id} { allow read, write: if true; }
     match /documents/{id} { allow read, write: if true; }
+
+    // -------------------------------------------------------------
+    // 8. Storage, Sync & Diagnostics
+    // -------------------------------------------------------------
     match /mongo_file_chunks/{id} { allow read, write: if true; }
     match /mongo_sync_queue/{id} { allow read, write: if true; }
     match /logs/{id} { allow read, write: if true; }
     match /auditLogs/{id} { allow read, write: if true; }
 
-    match /{document=**} { allow read, write: if true; }
+    // Catch-all fallback for dynamic or nested subcollections
+    match /{document=**} {
+      allow read, write: if true;
+    }
   }
 }

@@ -159,16 +159,25 @@ const StudentTests = () => {
     try {
       const durationSeconds = (Number(takingTest.durationMinutes || takingTest.duration) || (takingTest.questions?.length || 10)) * 60;
       const elapsedMinutes = Math.max(0, Math.round((durationSeconds - timeLeftSeconds) / 60));
+      const studentUid = user?.uid || profile?.id || profile?.uid || '';
       const result = await studentMongoApi.submitTest({
         testId: takingTest.id,
         testData: takingTest,
         answers: selectedAnswers,
         timeTakenMinutes: elapsedMinutes,
+        studentId: studentUid,
+        studentName: profile?.name || user?.displayName || 'Student',
+        email: profile?.email || user?.email || '',
+        sifNumber: profile?.sifNumber || profile?.rollNumber || profile?.registerNumber || '',
+        year: year || profile?.year || takingTest?.year || '',
+        departmentId: profile?.departmentId || takingTest?.departmentId || '',
+        departmentName: profile?.departmentName || takingTest?.departmentName || '',
       });
       setReviewResult(result);
       setTakingTest(null);
     } catch (err) {
       console.error('Failed to submit test:', err);
+      alert(err?.message || 'Failed to submit test. Please check your connection and try again.');
     } finally {
       setSubmittingTest(false);
     }
