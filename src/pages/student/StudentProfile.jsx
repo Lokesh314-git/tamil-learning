@@ -1,5 +1,7 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { doc, updateDoc, serverTimestamp } from "../../services/studentMongoApi";
 import { useAuth } from "../../context/AuthContext";
+import { db } from "../../firebase";
 import StudentPageHeader from "../../components/studentui/StudentPageHeader";
 import StudentContentCard from "../../components/studentui/StudentContentCard";
 import StatusBadge from "../../components/studentui/StatusBadge";
@@ -22,7 +24,39 @@ import {
 } from "lucide-react";
 
 const StudentProfile = () => {
-  const { profile } = useAuth();
+  const { profile, user, refreshProfile } = useAuth();
+  const [details, setDetails] = useState({ address: "", parentName: "", parentMobile: "", emergencyContact: "", bloodGroup: "" });
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+
+  useEffect(() => {
+    setDetails({
+      address: profile?.address || "",
+      parentName: profile?.parentName || "",
+      parentMobile: profile?.parentMobile || "",
+      emergencyContact: profile?.emergencyContact || "",
+      bloodGroup: profile?.bloodGroup || "",
+    });
+  }, [profile]);
+
+  const saveDetails = async (event) => {
+    event.preventDefault();
+    if (!user?.uid) return;
+    setSaving(true);
+    setSaveMessage("");
+    try {
+      await updateDoc(doc(db, "users", user.uid), { ...details, profileUpdatedAt: serverTimestamp() });
+      await refreshProfile();
+      setSaveMessage("Your profile details have been saved.");
+    } catch (error) {
+      console.error("Could not save student profile:", error);
+      setSaveMessage("Could not save your details. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateDetail = (event) => setDetails((current) => ({ ...current, [event.target.name]: event.target.value }));
 
   const initials = useMemo(
     () => (profile?.name || "ST").split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase(),
@@ -164,39 +198,36 @@ const StudentProfile = () => {
         </div>
       </StudentContentCard>
 
-      {/* Parent / Guardian & Emergency Information */}
+      {/* Student-editable personal and family details. Imported academic identity stays read-only. */}
       <StudentContentCard>
         <h4 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 700, color: "var(--color-text)" }}>
-          Parent & Emergency Contact Information
+          Personal & Emergency Information
         </h4>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: 16
-          }}
-        >
-          <div style={{ padding: 14, borderRadius: 10, background: "var(--color-bg-secondary)", border: "1px solid var(--color-border)" }}>
-            <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 4 }}>Parent / Guardian Name</div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>{profile?.parentName || "Parent / Guardian"}</div>
+        <form onSubmit={saveDetails} className="grid grid-2" style={{ gap: 14 }}>
+          {[
+            ["address", "Home Address", "textarea"],
+            ["parentName", "Parent / Guardian Name", "text"],
+            ["parentMobile", "Parent / Guardian Mobile", "tel"],
+            ["emergencyContact", "Emergency Contact", "tel"],
+            ["bloodGroup", "Blood Group", "text"],
+          ].map(([name, label, type]) => (
+            <label key={name} className="form-group" style={{ display: "grid", gap: 6 }}>
+              <span className="form-label">{label}</span>
+              {type === "textarea" ? (
+                <textarea className="input" name={name} rows={3} value={details[name]} onChange={updateDetail} maxLength={500} />
+              ) : (
+                <input className="input" name={name} type={type} value={details[name]} onChange={updateDetail} maxLength={name === "bloodGroup" ? 5 : 100} />
+              )}
+            </label>
+          ))}
+          <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <button className="btn btn-primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save Personal Details"}</button>
+            {saveMessage && <span role="status" style={{ color: saveMessage.startsWith("Could not") ? "#dc2626" : "#15803d" }}>{saveMessage}</span>}
           </div>
-
-          <div style={{ padding: 14, borderRadius: 10, background: "var(--color-bg-secondary)", border: "1px solid var(--color-border)" }}>
-            <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 4 }}>Parent Mobile / Emergency Contact</div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>{profile?.parentMobile || profile?.emergencyContact || "-"}</div>
-          </div>
-
-          <div style={{ padding: 14, borderRadius: 10, background: "var(--color-bg-secondary)", border: "1px solid var(--color-border)" }}>
-            <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 4 }}>Blood Group</div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>{profile?.bloodGroup || "O+ (Positive)"}</div>
-          </div>
-
-          <div style={{ padding: 14, borderRadius: 10, background: "var(--color-bg-secondary)", border: "1px solid var(--color-border)" }}>
-            <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 4 }}>Batch / Admission Session</div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>{profile?.batch || "2024 - 2027"}</div>
-          </div>
-        </div>
+        </form>
+        <p style={{ margin: "12px 0 0", fontSize: 12, color: "var(--color-text-muted)" }}>
+          Your name, SIF and roll numbers, date of birth, mobile number, class, year, department, and section are maintained by the administration.
+        </p>
 
         {/* PWA Install Button */}
         <div style={{ marginTop: "24px", display: "flex", justifyContent: "center" }}>

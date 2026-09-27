@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { addDoc, collection, onSnapshot, query, serverTimestamp, where } from 'firebase/firestore';
+import {
+  collection,
+  onSnapshot,
+  addDoc,
+  serverTimestamp,
+} from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import StudentPageHeader from '../../components/studentui/StudentPageHeader';
@@ -44,21 +49,34 @@ const StudentFeedback = () => {
   const [queryText, setQueryText] = useState('');
 
   useEffect(() => {
-    if (!user?.uid) {
+    const studentUid = user?.uid || profile?.id || profile?.uid;
+    const studentEmail = profile?.email || user?.email;
+    const sifNumber = profile?.sifNumber || profile?.rollNumber || profile?.registerNumber;
+
+    if (!studentUid && !studentEmail && !sifNumber) {
       setLoading(false);
       return;
     }
 
     setLoading(true);
-    const q = query(collection(db, 'feedback'), where('studentId', '==', user.uid));
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      list.sort((a, b) => {
-        const timeA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
-        const timeB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+    // Listen to real-time feedback updates and match by student identity
+    const unsub = onSnapshot(collection(db, 'feedback'), (snap) => {
+      const allFeedback = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const myFeedback = allFeedback.filter((f) => {
+        if (studentUid && (f.studentId === studentUid || f.userId === studentUid)) return true;
+        if (studentEmail && f.email && String(f.email).toLowerCase() === String(studentEmail).toLowerCase()) return true;
+        if (sifNumber && (f.sifNumber === sifNumber || f.studentRoll === sifNumber)) return true;
+        if (f.studentName && profile?.name && String(f.studentName).toLowerCase() === String(profile.name).toLowerCase() && f.year === (year || profile?.year)) return true;
+        return false;
+      });
+
+      myFeedback.sort((a, b) => {
+        const timeA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.timestamp ? new Date(a.timestamp).getTime() : 0);
+        const timeB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.timestamp ? new Date(b.timestamp).getTime() : 0);
         return timeB - timeA;
       });
-      setQueries(list);
+
+      setQueries(myFeedback);
       setLoading(false);
     }, (err) => {
       console.warn('Feedback listener err:', err);
@@ -66,41 +84,87 @@ const StudentFeedback = () => {
     });
 
     return () => unsub();
-  }, [user?.uid]);
+  }, [user?.uid, profile?.id, profile?.uid, profile?.email, profile?.sifNumber, profile?.name, year, profile?.year]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!subject.trim() || !queryText.trim()) {
+    const cleanSubject = subject.trim();
+    const cleanMessage = queryText.trim();
+
+    if (!cleanSubject || !cleanMessage) {
       setError('Please provide a subject title and message content.');
       return;
     }
+
+    const currentStudentId = user?.uid || profile?.id || profile?.uid || '';
+    const currentSif = profile?.sifNumber || profile?.rollNumber || profile?.registerNumber || '';
+    const currentName = profile?.name || 'Student';
+    const currentEmail = profile?.email || user?.email || '';
+    const currentYear = year || profile?.year || '1st Year';
+    const currentDeptId = profile?.departmentId || 'all';
+    const currentDeptName = profile?.departmentName || 'Tamil';
+    const currentSection = profile?.section || 'A';
 
     setSubmitting(true);
     setError('');
     setMessage('');
 
     try {
-      await addDoc(collection(db, 'feedback'), {
-        studentId: user.uid,
-        studentName: profile?.name || 'Student',
-        email: profile?.email || '',
-        year: year || profile?.year || '1st Year',
-        departmentId: profile?.departmentId || '',
-        departmentName: profile?.departmentName || 'Tamil',
-        category,
-        subject: subject.trim(),
-        message: queryText.trim(),
+      const payload = {
+        studentId: currentStudentId,
+        userId: currentStudentId,
+        studentName: currentName,
+        email: currentEmail,
+        sifNumber: currentSif,
+        studentRoll: currentSif,
+        year: currentYear,
+        departmentId: currentDeptId,
+        departmentName: currentDeptName,
+        section: currentSection,
+        category: category || 'academic',
+        subject: cleanSubject,
+        message: cleanMessage,
         status: 'open',
         adminReply: '',
+        studentRead: true,
         createdAt: serverTimestamp(),
+        timestamp: new Date().toISOString()
+      };
+
+      // Strip any undefined keys
+      Object.keys(payload).forEach((k) => {
+        if (payload[k] === undefined) delete payload[k];
       });
 
-      setMessage('Your query has been submitted successfully to the faculty / administration!');
+      const notifPayload = {
+        title: `💬 New Feedback from ${currentName}`,
+        body: `"${cleanSubject}": ${cleanMessage.substring(0, 80)}`,
+        type: 'feedback',
+        category: 'feedback',
+        priority: 'normal',
+        recipientRole: 'admin',
+        targetScope: 'admin',
+        studentId: currentStudentId,
+        studentName: currentName,
+        read: false,
+        isRead: false,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        timestamp: new Date().toISOString()
+      };
+      Object.keys(notifPayload).forEach((k) => {
+        if (notifPayload[k] === undefined) delete notifPayload[k];
+      });
+
+      await addDoc(collection(db, 'feedback'), payload);
+      addDoc(collection(db, 'notifications'), notifPayload).catch(() => {});
+
       setSubject('');
       setQueryText('');
-      setCategory('academic');
+      setMessage('Your query has been submitted successfully to the faculty / administration!');
     } catch (err) {
-      setError(err.message || 'Failed to submit query. Please try again.');
+      console.error('Feedback submit error:', err);
+      setError(err?.message || 'Failed to submit feedback. Please check your network and try again.');
     } finally {
       setSubmitting(false);
     }
@@ -186,8 +250,10 @@ const StudentFeedback = () => {
           ) : queries.length > 0 ? (
             <div className="grid" style={{ gap: 12 }}>
               {queries.map((q) => {
+                const replyContent = q.adminReply || q.reply || q.adminResponse || q.response || q.solution;
+                const hasReply = Boolean(replyContent && String(replyContent).trim());
                 const isResolved = q.status === 'resolved';
-                const isInProgress = q.status === 'in_progress';
+                const isInProgress = q.status === 'in_progress' || (hasReply && !isResolved);
                 const timeStr = q.createdAt?.toDate ? q.createdAt.toDate().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : 'Recent';
 
                 return (
@@ -217,13 +283,13 @@ const StudentFeedback = () => {
                     </p>
 
                     {/* Admin Response */}
-                    {q.adminReply ? (
+                    {hasReply ? (
                       <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(34, 197, 94, 0.06)', borderRadius: 8, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
                           <CheckCircle2 size={14} /> Teacher / Admin Reply:
                         </div>
-                        <div style={{ fontSize: 13, color: 'var(--color-text)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-                          {q.adminReply}
+                        <div style={{ fontSize: 13, color: 'var(--color-text)', whiteSpace: 'pre-wrap', lineHeight: 1.5, fontWeight: 500 }}>
+                          {replyContent}
                         </div>
                       </div>
                     ) : (

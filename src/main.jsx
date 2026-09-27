@@ -6,6 +6,7 @@ import App from './App';
 import './index.css';
 import { AuthProvider } from './context/AuthContext';
 import { YearProvider } from './context/YearContext';
+import { NotificationBadgeProvider } from './context/NotificationBadgeContext';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -13,7 +14,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <HashRouter>
         <AuthProvider>
           <YearProvider>
-            <App />
+            <NotificationBadgeProvider>
+              <App />
+            </NotificationBadgeProvider>
           </YearProvider>
         </AuthProvider>
       </HashRouter>

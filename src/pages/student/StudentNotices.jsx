@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from '../../services/studentMongoApi';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { openOrDownloadFile } from '../../utils/fileUpload';
@@ -68,10 +68,16 @@ const StudentNotices = () => {
   const filteredNotices = useMemo(() => {
     return notices.filter((n) => {
       // Year filter
-      const yearMatch = !n.year || n.year === 'All' || n.year === year;
+      const itemYear = n.targetYear || n.year;
+      const yearMatch = !itemYear || itemYear === 'All' || itemYear === 'all' || itemYear === 'All Years' || itemYear.toLowerCase() === (year || profile?.year || '').toLowerCase();
 
-      // Department filter
-      const deptMatch = !n.departmentId || n.departmentId === 'all' || n.departmentId === profile?.departmentId;
+      // Department / Class filter
+      const itemDept = n.targetDepartmentId || n.targetDeptId || n.departmentId;
+      const deptMatch = !itemDept || itemDept === 'all' || itemDept === 'All' || !profile?.departmentId || String(itemDept).toLowerCase() === String(profile?.departmentId).toLowerCase();
+
+      // Section filter
+      const itemSec = n.targetSection || n.section;
+      const secMatch = !itemSec || itemSec === 'all' || itemSec === 'All' || !profile?.section || String(itemSec).trim().toUpperCase() === String(profile?.section).trim().toUpperCase();
 
       // Category filter
       const catMatch = selectedCategory === 'all' || (n.category || 'general').toLowerCase() === selectedCategory.toLowerCase();
@@ -79,12 +85,12 @@ const StudentNotices = () => {
       // Search query
       const queryMatch = !searchQuery.trim() ||
         (n.title || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (n.content || n.message || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (n.body || n.content || n.message || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         (n.category || '').toLowerCase().includes(searchQuery.toLowerCase());
 
-      return yearMatch && deptMatch && catMatch && queryMatch;
+      return yearMatch && deptMatch && secMatch && catMatch && queryMatch;
     });
-  }, [notices, year, profile?.departmentId, selectedCategory, searchQuery]);
+  }, [notices, year, profile?.year, profile?.departmentId, profile?.section, selectedCategory, searchQuery]);
 
   return (
     <div className="student-page grid" style={{ gap: 16 }}>

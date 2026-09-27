@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 
-const EMPTY_FORM = { line1: '', line2: '' };
+const EMPTY_FORM = { line1: '', line2: '', meaning: '' };
 
 const AdminThirukkural = () => {
   const [kurals, setKurals] = useState([]);
@@ -42,8 +42,9 @@ const AdminThirukkural = () => {
     event.preventDefault();
     const line1 = form.line1.trim();
     const line2 = form.line2.trim();
+    const meaning = (form.meaning || '').trim();
     if (!line1 || !line2) {
-      setError('Both lines are required.');
+      setError('Both lines of Thirukkural are required.');
       return;
     }
 
@@ -55,6 +56,7 @@ const AdminThirukkural = () => {
         await updateDoc(doc(db, 'thirukkurals', editingId), {
           line1,
           line2,
+          meaning,
           updatedAt: serverTimestamp()
         });
         setMessage('Thirukkural updated successfully.');
@@ -62,6 +64,7 @@ const AdminThirukkural = () => {
         await addDoc(collection(db, 'thirukkurals'), {
           line1,
           line2,
+          meaning,
           isActive: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
@@ -80,7 +83,8 @@ const AdminThirukkural = () => {
     setEditingId(kural.id);
     setForm({
       line1: kural.line1 || '',
-      line2: kural.line2 || ''
+      line2: kural.line2 || '',
+      meaning: kural.meaning || kural.porul || ''
     });
     setError('');
     setMessage('');
@@ -122,16 +126,23 @@ const AdminThirukkural = () => {
           <textarea
             className="input"
             rows={2}
-            placeholder="Line 1"
+            placeholder="Line 1 (முதல் வரி)"
             value={form.line1}
             onChange={(e) => setForm((prev) => ({ ...prev, line1: e.target.value }))}
           />
           <textarea
             className="input"
             rows={2}
-            placeholder="Line 2"
+            placeholder="Line 2 (இரண்டாம் வரி)"
             value={form.line2}
             onChange={(e) => setForm((prev) => ({ ...prev, line2: e.target.value }))}
+          />
+          <textarea
+            className="input"
+            rows={2}
+            placeholder="Meaning / விளக்கம் (Optional)"
+            value={form.meaning}
+            onChange={(e) => setForm((prev) => ({ ...prev, meaning: e.target.value }))}
           />
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
             {editingId && (
@@ -153,8 +164,8 @@ const AdminThirukkural = () => {
           <table className="table">
             <thead>
               <tr>
-                <th>Line 1</th>
-                <th>Line 2</th>
+                <th>Thirukkural</th>
+                <th>Meaning (பொருள்)</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
@@ -162,8 +173,13 @@ const AdminThirukkural = () => {
             <tbody>
               {kurals.map((kural) => (
                 <tr key={kural.id}>
-                  <td className="kural-cell">{kural.line1}</td>
-                  <td className="kural-cell">{kural.line2}</td>
+                  <td className="kural-cell">
+                    <div style={{ fontWeight: 600 }}>{kural.line1}</div>
+                    <div style={{ color: 'var(--color-text-muted)' }}>{kural.line2}</div>
+                  </td>
+                  <td style={{ fontSize: 13, maxWidth: 280 }}>
+                    {kural.meaning || kural.porul || <span style={{ color: 'var(--color-text-muted)', fontStyle: 'italic' }}>—</span>}
+                  </td>
                   <td>
                     <span className={`pill ${kural.isActive ? 'success' : 'neutral'}`}>
                       {kural.isActive ? 'Active' : 'Inactive'}

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from '../../services/studentMongoApi';
+import { studentMongoApi } from '../../services/studentMongoApi';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { openOrDownloadFile } from '../../utils/fileUpload';
@@ -51,15 +52,16 @@ const StudentUnits = () => {
   const [tests, setTests] = useState([]);
   const [results, setResults] = useState([]);
   const [taskSubmissions, setTaskSubmissions] = useState({});
-  const [completedUnits, setCompletedUnits] = useState(() => {
-    try {
-      const saved = localStorage.getItem(`student_completed_units_${user?.uid || 'guest'}`);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [completedUnits, setCompletedUnits] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    studentMongoApi.getPreferences().then((preferences) => {
+      if (active) setCompletedUnits(Array.isArray(preferences.completedUnits) ? preferences.completedUnits : []);
+    }).catch((error) => console.warn('Could not load unit progress:', error));
+    return () => { active = false; };
+  }, [user?.uid]);
 
   useEffect(() => {
     if (!year || !profile?.departmentId) {
@@ -73,6 +75,8 @@ const StudentUnits = () => {
       ready++;
       if (ready >= 5) setLoading(false);
     };
+
+    const studentYear = year || profile?.year || '1st Year';
 
     // 1. Units
     const qUnits = query(collection(db, 'units'), where('year', '==', year));
@@ -94,7 +98,7 @@ const StudentUnits = () => {
       const list = [];
       snap.forEach((d) => {
         const data = d.data();
-        const yearOk = !data.year || data.year === 'All' || data.year === year;
+        const yearOk = !data.year || data.year === 'All' || data.year === 'All Years' || data.year === year;
         const deptOk = !data.departmentId || data.departmentId === 'all' || data.departmentId === profile.departmentId;
         if (yearOk && deptOk) list.push({ id: d.id, ...data });
       });
@@ -116,13 +120,25 @@ const StudentUnits = () => {
       check();
     }, () => check());
 
-    // 4. Tests
-    const qTests = query(collection(db, 'publishedTests'), where('year', '==', year));
-    const unsubTests = onSnapshot(qTests, (snap) => {
+    // 4. Tests (filtered strictly by student's year)
+    const unsubTests = onSnapshot(collection(db, 'tests'), (snap) => {
       const list = [];
       snap.forEach((d) => {
-        const data = d.data();
-        if (!data.departmentId || data.departmentId === 'all' || data.departmentId === profile.departmentId) {
+        const data = d.data() || {};
+        const testYear = data.year || 'All Years';
+        const yearOk =
+          testYear === 'All Years' ||
+          testYear === 'All' ||
+          testYear === 'all' ||
+          testYear.toLowerCase() === studentYear.toLowerCase() ||
+          (profile?.year && testYear.toLowerCase() === profile.year.toLowerCase());
+
+        const deptOk =
+          !data.departmentId ||
+          data.departmentId === 'all' ||
+          data.departmentId === profile.departmentId;
+
+        if (yearOk && deptOk) {
           list.push({ id: d.id, ...data });
         }
       });
@@ -131,7 +147,7 @@ const StudentUnits = () => {
     }, () => check());
 
     // 5. Results
-    const qResults = query(collection(db, 'results'), where('studentId', '==', user.uid), where('year', '==', year));
+    const qResults = query(collection(db, 'results'), where('studentId', '==', user.uid));
     const unsubResults = onSnapshot(qResults, (snap) => {
       setResults(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       check();
@@ -156,7 +172,7 @@ const StudentUnits = () => {
       unsubResults();
       unsubSubs();
     };
-  }, [year, profile?.departmentId, user?.uid]);
+  }, [year, profile?.departmentId, profile?.year, user?.uid]);
 
   // Current Unit Data
   const currentUnitRecord = useMemo(() => {
@@ -190,11 +206,7 @@ const StudentUnits = () => {
   const toggleUnitCompletion = (unitNum) => {
     setCompletedUnits((prev) => {
       const next = prev.includes(unitNum) ? prev.filter((u) => u !== unitNum) : [...prev, unitNum];
-      try {
-        localStorage.setItem(`student_completed_units_${user?.uid || 'guest'}`, JSON.stringify(next));
-      } catch (err) {
-        console.warn('Failed to save completed units:', err);
-      }
+      studentMongoApi.updatePreferences({ completedUnits: next }).catch((err) => console.warn('Failed to save unit progress:', err));
       return next;
     });
   };
@@ -206,7 +218,7 @@ const StudentUnits = () => {
     <div className="student-page grid" style={{ gap: 16 }}>
       <StudentPageHeader
         title="Units (1 to 5) Curriculum"
-        subtitle={`${year} / ${profile?.departmentName || 'Department'} • Structured Syllabus & Modules`}
+        subtitle={`${year || profile?.year || 'Your Year'} / ${profile?.departmentName || 'Department'} • Structured Syllabus & Modules`}
       />
 
       {/* Unit Selection Tabs */}

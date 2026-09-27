@@ -9,7 +9,9 @@ import {
   deleteDoc,
   addDoc,
   serverTimestamp,
-  where
+  where,
+  getDocs,
+  writeBatch
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { YEARS } from '../../utils/departments';
@@ -126,9 +128,18 @@ const AdminTestsPage = () => {
 
   const attemptsByTestId = useMemo(() => {
     const map = {};
+    const studentTestSet = new Set();
+
     results.forEach((r) => {
-      const key = r.testId || r.testTitle;
-      if (key) map[key] = (map[key] || 0) + 1;
+      const testKey = r.testId || r.testTitle;
+      const studentKey = r.studentId || r.sifNumber || r.email || r.studentName;
+      if (!testKey || !studentKey) return;
+
+      const combo = `${testKey}_${studentKey}`;
+      if (!studentTestSet.has(combo)) {
+        studentTestSet.add(combo);
+        map[testKey] = (map[testKey] || 0) + 1;
+      }
     });
     return map;
   }, [results]);
@@ -139,24 +150,34 @@ const AdminTestsPage = () => {
       const departmentName = data.departmentId === 'all' ? 'All Classes' : (selectedDept?.name || 'General');
 
       let savedId = testFormModal?.id;
+      const testPayload = {
+        ...data,
+        year: data.year || '1st Year',
+        departmentId: data.departmentId || 'all',
+        departmentName,
+        testType: data.testType || 'quiz',
+        passMark: Number(data.passMark) || 40,
+        updatedAt: serverTimestamp(),
+      };
 
       if (testFormModal?.id) {
-        await updateDoc(doc(db, 'tests', testFormModal.id), {
-          ...data,
-          departmentName,
-          updatedAt: serverTimestamp(),
-        });
+        await updateDoc(doc(db, 'tests', testFormModal.id), testPayload);
+        await setDoc(doc(db, 'publishedTests', testFormModal.id), {
+          ...testPayload,
+          questions: data.questions,
+        }, { merge: true });
         setMessage('Assessment updated successfully.');
       } else {
         const ref = await addDoc(collection(db, 'tests'), {
-          ...data,
-          departmentName,
-          testType: data.testType || 'quiz',
-          passMark: Number(data.passMark) || 40,
+          ...testPayload,
           createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
         });
         savedId = ref.id;
+        await setDoc(doc(db, 'publishedTests', savedId), {
+          ...testPayload,
+          createdAt: serverTimestamp(),
+          questions: data.questions,
+        });
         setMessage('New Assessment created successfully.');
       }
 
@@ -171,7 +192,7 @@ const AdminTestsPage = () => {
             testTime: data.testTime,
             duration: data.duration,
             description: data.description,
-            targetType: data.targetType || 'all',
+            targetType: data.year && data.year !== 'All Years' ? 'year' : (data.targetType || 'all'),
             targetYear: data.year || 'all',
             targetDepartmentId: data.departmentId || 'all',
             targetDepartmentName: departmentName,
@@ -191,8 +212,25 @@ const AdminTestsPage = () => {
   const handleDeleteTest = async () => {
     if (!deleteTarget) return;
     try {
-      await deleteDoc(doc(db, 'tests', deleteTarget.id));
-      setMessage('Assessment deleted successfully.');
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'tests', deleteTarget.id));
+      batch.delete(doc(db, 'publishedTests', deleteTarget.id));
+
+      // 1. Delete all results for this test
+      const resSnap = await getDocs(query(collection(db, 'results'), where('testId', '==', deleteTarget.id)));
+      resSnap.forEach((d) => batch.delete(d.ref));
+
+      if (deleteTarget.title) {
+        const titleResSnap = await getDocs(query(collection(db, 'results'), where('testTitle', '==', deleteTarget.title)));
+        titleResSnap.forEach((d) => batch.delete(d.ref));
+      }
+
+      // 2. Delete test notifications
+      const notifSnap = await getDocs(query(collection(db, 'notifications'), where('testId', '==', deleteTarget.id)));
+      notifSnap.forEach((d) => batch.delete(d.ref));
+
+      await batch.commit();
+      setMessage('Assessment and all associated test records were deleted permanently.');
     } catch (err) {
       setError(err.message || 'Failed to delete test.');
     } finally {

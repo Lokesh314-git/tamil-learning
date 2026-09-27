@@ -19,7 +19,7 @@ import { YEARS, sortDepartmentsByName } from '../../utils/departments';
 import Loader from '../../components/Loader';
 import EmptyState from '../../components/EmptyState';
 import ConfirmDeleteModal from '../../components/ConfirmDeleteModal';
-import { GraduationCap, Plus, Users, ArrowUpRight, BookOpen, Layers, Edit, Trash2, CheckCircle2, X } from 'lucide-react';
+import { GraduationCap, Plus, Users, ArrowUpRight, BookOpen, Layers, Edit, Trash2, CheckCircle2, X, ArrowRight } from 'lucide-react';
 
 const SECTIONS = ['A', 'B', 'C', 'D'];
 
@@ -46,6 +46,7 @@ const AdminClassesPage = () => {
   const [fromYear, setFromYear] = useState('1st Year');
   const [toYear, setToYear] = useState('2nd Year');
   const [promoteClassId, setPromoteClassId] = useState('all');
+  const [targetSection, setTargetSection] = useState('keep'); // 'keep' | 'A' | 'B' | 'C' | 'D'
   const [promoting, setPromoting] = useState(false);
 
   useEffect(() => {
@@ -102,12 +103,30 @@ const AdminClassesPage = () => {
     const map = {};
     students.forEach((s) => {
       if (s.isDeleted || s.status === 'deleted') return;
-      if (s.departmentId) {
-        map[s.departmentId] = (map[s.departmentId] || 0) + 1;
+      const key = s.departmentId || s.classId;
+      if (key) {
+        map[key] = (map[key] || 0) + 1;
       }
     });
     return map;
   }, [students]);
+
+  const handleFromYearChange = (newFromYear) => {
+    setFromYear(newFromYear);
+    setPromoteClassId('all');
+    if (newFromYear === '1st Year') setToYear('2nd Year');
+    else if (newFromYear === '2nd Year') setToYear('3rd Year');
+    else if (newFromYear === '3rd Year') setToYear('Graduated');
+  };
+
+  const eligiblePromotionStudents = useMemo(() => {
+    return students.filter((s) => {
+      if (s.isDeleted || s.status === 'deleted') return false;
+      const yearMatch = (s.year || '').trim() === fromYear;
+      const classMatch = promoteClassId === 'all' || s.departmentId === promoteClassId || s.classId === promoteClassId;
+      return yearMatch && classMatch;
+    });
+  }, [students, fromYear, promoteClassId]);
 
   const openAddModal = () => {
     setEditingClass(null);
@@ -186,12 +205,7 @@ const AdminClassesPage = () => {
   };
 
   const handlePromoteStudents = async () => {
-    const eligible = students.filter((s) => {
-      if (s.isDeleted || s.status === 'deleted') return false;
-      const yearMatch = s.year === fromYear;
-      const classMatch = promoteClassId === 'all' || s.departmentId === promoteClassId;
-      return yearMatch && classMatch;
-    });
+    const eligible = eligiblePromotionStudents;
 
     if (eligible.length === 0) {
       setError(`No active students found in ${fromYear} to promote.`);
@@ -203,32 +217,102 @@ const AdminClassesPage = () => {
     setMessage('');
 
     try {
-      const batch = writeBatch(db);
-      eligible.forEach((s) => {
-        const studentRef = doc(db, 'users', s.id);
-        const isGraduating = toYear === 'Graduated';
-        batch.update(studentRef, {
-          year: toYear,
-          status: isGraduating ? 'graduated' : (s.status || 'active'),
-          promotedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+      const isGraduating = toYear === 'Graduated';
+      // Cache for newly created or matched departments in the target year
+      // Key: normalized department name, Value: { id, name, sections }
+      const targetDeptMap = new Map();
+
+      // Populate existing departments in target year
+      if (!isGraduating) {
+        classes
+          .filter((c) => (c.year || '').trim().toLowerCase() === toYear.trim().toLowerCase())
+          .forEach((c) => {
+            if (c.name) {
+              targetDeptMap.set(c.name.trim().toLowerCase(), {
+                id: c.id,
+                name: c.name.trim(),
+                sections: c.sections || ['A'],
+              });
+            }
+          });
+      }
+
+      // Prepare target departments and student updates
+      const studentPromotions = [];
+
+      for (const s of eligible) {
+        let finalDeptId = s.departmentId || s.classId || '';
+        let finalDeptName = s.departmentName || s.class || '';
+        let finalSection = targetSection === 'keep' ? (s.section || 'A') : targetSection;
+
+        // Clean section prefix if any (e.g., 'Section A' -> 'A')
+        finalSection = finalSection.replace(/^Section\s*/i, '').trim() || 'A';
+
+        if (!isGraduating) {
+          // Find source class details
+          const sourceClass = classes.find((c) => c.id === (s.departmentId || s.classId));
+          const deptName = (sourceClass?.name || s.departmentName || s.class || 'General').trim();
+          const deptKey = deptName.toLowerCase();
+
+          let targetDept = targetDeptMap.get(deptKey);
+
+          if (!targetDept) {
+            // Automatically create corresponding department/class in target year
+            const newDeptData = {
+              name: deptName,
+              year: toYear,
+              sections: sourceClass?.sections && sourceClass.sections.length ? sourceClass.sections : [finalSection, 'A'],
+              description: sourceClass?.description || `${deptName} (${toYear})`,
+              isActive: true,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            };
+            newDeptData.sections = Array.from(new Set(newDeptData.sections)).sort();
+
+            const newDocRef = await addDoc(collection(db, 'departments'), newDeptData);
+            targetDept = {
+              id: newDocRef.id,
+              name: deptName,
+              sections: newDeptData.sections,
+            };
+            targetDeptMap.set(deptKey, targetDept);
+          }
+
+          finalDeptId = targetDept.id;
+          finalDeptName = targetDept.name;
+        }
+
+        studentPromotions.push({
+          id: s.id,
+          updates: {
+            year: toYear,
+            departmentId: finalDeptId,
+            departmentName: finalDeptName,
+            class: finalDeptName,
+            classId: finalDeptId,
+            section: finalSection,
+            status: isGraduating ? 'graduated' : 'active',
+            promotedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
         });
+      }
 
-        // Also update studentLookup if SIF exists
-        if (s.sifNumber) {
-          const lookupRef = doc(db, 'studentLookup', s.sifNumber.toUpperCase());
-          batch.set(lookupRef, { year: toYear }, { merge: true });
-        }
-        if (s.mobileNumber) {
-          const lookupMobileRef = doc(db, 'studentLookup', s.mobileNumber);
-          batch.set(lookupMobileRef, { year: toYear }, { merge: true });
-        }
-      });
+      // Commit in batches of 400 (Firestore max 500 per batch)
+      const batchSize = 400;
+      for (let i = 0; i < studentPromotions.length; i += batchSize) {
+        const batch = writeBatch(db);
+        const slice = studentPromotions.slice(i, i + batchSize);
+        slice.forEach((p) => {
+          batch.update(doc(db, 'users', p.id), p.updates);
+        });
+        await batch.commit();
+      }
 
-      await batch.commit();
-      setMessage(`Successfully promoted ${eligible.length} students from ${fromYear} to ${toYear}!`);
+      setMessage(`🎉 Successfully promoted ${eligible.length} students to ${toYear} with updated class & section assignments!`);
       setPromoteModalOpen(false);
     } catch (err) {
+      console.error('Promotion error:', err);
       setError(err.message || 'Failed to promote students.');
     } finally {
       setPromoting(false);
@@ -447,7 +531,7 @@ const AdminClassesPage = () => {
                 <div className="class-dialog-actions">
                   <button type="button" className="btn btn-secondary" onClick={() => setClassModalOpen(false)}>Cancel</button>
                   <button type="submit" className="btn btn-primary class-dialog-submit" disabled={submitting}>
-                    {submitting ? 'Saving?' : editingClass ? 'Save changes' : 'Create class'}
+                    {submitting ? 'Saving...' : editingClass ? 'Save changes' : 'Create class'}
                   </button>
                 </div>
               </footer>
@@ -459,31 +543,31 @@ const AdminClassesPage = () => {
       {/* Promotion Modal */}
       {promoteModalOpen && createPortal((
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setPromoteModalOpen(false); }}>
-          <div className="modal" style={{ maxWidth: 540 }}>
+          <div className="modal" style={{ maxWidth: 580 }}>
             <div className="modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <GraduationCap size={22} color="var(--color-primary)" />
-                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Promote Students to Next Year</h3>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Promote Students & Advance Classes</h3>
               </div>
               <button className="btn btn-ghost btn-sm" onClick={() => setPromoteModalOpen(false)}>✕</button>
             </div>
 
-            <div className="modal-body">
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <p style={{ fontSize: 13, color: '#64748b', margin: 0 }}>
-                Batch promote eligible students to the next academic level. All portal access and credentials will be preserved.
+                Batch promote students to the next academic level. Classes and sections will be automatically matched or created in the target year.
               </p>
 
-              <div className="grid grid-2" style={{ gap: 10 }}>
+              <div className="grid grid-2" style={{ gap: 12 }}>
                 <div>
-                  <label className="form-label">Current Year (From)</label>
-                  <select className="input" value={fromYear} onChange={(e) => setFromYear(e.target.value)}>
+                  <label className="form-label">Current Academic Year</label>
+                  <select className="input" value={fromYear} onChange={(e) => handleFromYearChange(e.target.value)}>
                     <option value="1st Year">1st Year</option>
                     <option value="2nd Year">2nd Year</option>
                     <option value="3rd Year">3rd Year</option>
                   </select>
                 </div>
                 <div>
-                  <label className="form-label">Promote To</label>
+                  <label className="form-label">Promote To Target Year</label>
                   <select className="input" value={toYear} onChange={(e) => setToYear(e.target.value)}>
                     <option value="2nd Year">2nd Year</option>
                     <option value="3rd Year">3rd Year</option>
@@ -492,18 +576,52 @@ const AdminClassesPage = () => {
                 </div>
               </div>
 
-              <div>
-                <label className="form-label">Target Department / Class</label>
-                <select className="input" value={promoteClassId} onChange={(e) => setPromoteClassId(e.target.value)}>
-                  <option value="all">All Classes & Departments</option>
-                  {classes.filter((c) => c.year === fromYear).map((c) => (
-                    <option key={c.id} value={c.id}>{c.name} ({c.year})</option>
-                  ))}
-                </select>
+              <div className="grid grid-2" style={{ gap: 12 }}>
+                <div>
+                  <label className="form-label">Filter Source Class</label>
+                  <select className="input" value={promoteClassId} onChange={(e) => setPromoteClassId(e.target.value)}>
+                    <option value="all">All Classes & Departments</option>
+                    {classes.filter((c) => (c.year || '').trim() === fromYear).map((c) => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.year})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label">Target Section Assignment</label>
+                  <select className="input" value={targetSection} onChange={(e) => setTargetSection(e.target.value)}>
+                    <option value="keep">Keep Current Section (e.g. A → A, B → B)</option>
+                    <option value="A">Assign all to Section A</option>
+                    <option value="B">Assign all to Section B</option>
+                    <option value="C">Assign all to Section C</option>
+                    <option value="D">Assign all to Section D</option>
+                  </select>
+                </div>
               </div>
 
-              <div style={{ background: '#f8fafc', padding: 12, borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12, color: '#475569' }}>
-                ℹ️ Students will instantly see their updated curriculum units and tests when they access their student portal.
+              {/* Promotion summary card */}
+              <div style={{ background: '#eff6ff', padding: 14, borderRadius: 10, border: '1px solid #bfdbfe', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#1e40af' }}>
+                    Eligible Students Found:
+                  </span>
+                  <span style={{ background: '#1d4ed8', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: 12, fontWeight: 800 }}>
+                    {eligiblePromotionStudents.length} Students
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: '#1e3a8a', display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                  <span>{fromYear}</span>
+                  <ArrowRight size={14} />
+                  <span style={{ fontWeight: 700 }}>{toYear}</span>
+                  {toYear !== 'Graduated' && (
+                    <span style={{ color: '#047857', fontWeight: 600, marginLeft: 6 }}>
+                      (Class & Section automatically carried forward)
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ background: '#f8fafc', padding: 10, borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12, color: '#64748b' }}>
+                💡 Upon promotion, students' class, section, units, tasks, and online tests will immediately switch to <strong>{toYear}</strong>.
               </div>
             </div>
 
@@ -511,8 +629,12 @@ const AdminClassesPage = () => {
               <button className="btn btn-secondary" onClick={() => setPromoteModalOpen(false)}>
                 Cancel
               </button>
-              <button className="btn btn-primary" onClick={handlePromoteStudents} disabled={promoting}>
-                {promoting ? 'Promoting...' : `Confirm Promotion (${fromYear} → ${toYear})`}
+              <button
+                className="btn btn-primary"
+                onClick={handlePromoteStudents}
+                disabled={promoting || eligiblePromotionStudents.length === 0}
+              >
+                {promoting ? 'Promoting Students...' : `Confirm Promotion (${eligiblePromotionStudents.length} Students)`}
               </button>
             </div>
           </div>

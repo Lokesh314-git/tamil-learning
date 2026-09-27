@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from '../../services/studentMongoApi';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import StudentPageHeader from '../../components/studentui/StudentPageHeader';

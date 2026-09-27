@@ -238,6 +238,22 @@ export const parseStudentExcel = async (file) => {
     }
   }
 
+  const seenSif = new Set();
+  const seenMobile = new Set();
+  students.forEach((student) => {
+    if (!student.isValid) return;
+    const duplicate = (student.sifNumber && seenSif.has(student.sifNumber)) ||
+      (student.mobileNumber && seenMobile.has(student.mobileNumber));
+    if (duplicate) {
+      student.isValid = false;
+      student.errors.push('Duplicate SIF or Mobile Number in this file');
+      errors.push(`Row ${student.rowIndex}: Duplicate SIF or Mobile Number in this file`);
+      return;
+    }
+    if (student.sifNumber) seenSif.add(student.sifNumber);
+    if (student.mobileNumber) seenMobile.add(student.mobileNumber);
+  });
+
   return {
     students,
     totalRows: students.length,

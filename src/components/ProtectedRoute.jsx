@@ -14,21 +14,20 @@ const ProtectedRoute = ({ role }) => {
     return <Navigate to="/auth/student-login" replace />;
   }
   if (role === 'student') {
-    if (!profile || profile.role !== 'student') return <Navigate to="/auth" replace />;
+    if (!profile || (profile.role !== 'student' && profile.role !== 'admin')) return <Navigate to="/auth" replace />;
     if (!isApprovedAccount(profile)) {
       return <Navigate to="/auth/student-login" replace />;
     }
   }
-  if (role && profile?.role !== role) {
-    if (role === 'admin') return <Navigate to="/auth/admin-login" replace />;
-    if (profile?.role === 'admin') return <Navigate to="/admin/dashboard" replace />;
-    if (profile?.role === 'student') {
-      const y = profile.year ? encodeURIComponent(profile.year) : '';
-      return <Navigate to={y ? `/student/year/${y}/dashboard` : '/auth'} replace />;
+
+  if (role === 'admin') {
+    if (!profile || profile.role !== 'admin') {
+      return <Navigate to="/auth/admin-login" replace />;
     }
-    return <Navigate to="/auth" replace />;
   }
+
   return <Outlet />;
 };
 
 export default ProtectedRoute;
+

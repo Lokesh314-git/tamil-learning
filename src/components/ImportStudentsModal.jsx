@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { doc, writeBatch, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../firebase';
 import Modal from './ui/Modal';
 import {
   parseStudentExcel,
@@ -124,19 +125,21 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
       const deptId = departmentId === '__custom__' ? `custom_${Date.now()}` : departmentId || 'general';
 
       // Firestore batches are limited to 500 operations.
-      // Each student produces up to 4 docs: users, students data, SIF lookup, mobile lookup.
-      // Keep each batch below Firestore's 500-write limit.
-      const CHUNK_SIZE = 120;
+      // Store the canonical credential record in MongoDB, then create the
+      // Firestore portal profiles used by Firebase Auth and the student UI.
+      const CHUNK_SIZE = 200;
       let processed = 0;
+      const importStudents = httpsCallable(functions, 'importStudentsToMongo');
+      const allMongoRecords = [];
 
       for (let i = 0; i < validStudents.length; i += CHUNK_SIZE) {
         const chunk = validStudents.slice(i, i + CHUNK_SIZE);
         const batch = writeBatch(db);
 
         for (const student of chunk) {
-          const studentId = `std_${student.sifNumber.toLowerCase()}_${student.mobileNumber}`;
+          const studentId = crypto.randomUUID();
           const studentDocRef = doc(db, 'users', studentId);
-          const studentDataRef = doc(db, 'students data', studentId);
+          const now = new Date();
 
           const studentData = {
             uid: studentId,
@@ -161,66 +164,17 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
             updatedAt: serverTimestamp()
           };
 
+          allMongoRecords.push({ ...studentData, importedAt: now, createdAt: now, updatedAt: now });
           batch.set(studentDocRef, studentData, { merge: true });
-          batch.set(studentDataRef, studentData, { merge: true });
-
-          // Lookup by SIF Number
-          if (student.sifNumber) {
-            const lookupSifRef = doc(db, 'studentLookup', student.sifNumber);
-            batch.set(
-              lookupSifRef,
-              {
-                studentId,
-                sifNumber: student.sifNumber,
-                mobileNumber: student.mobileNumber,
-                dob: student.dob,
-                name: student.name,
-                rollNumber: student.rollNumber,
-                year,
-                departmentId: deptId,
-                departmentName: effectiveClassName,
-                section: section.trim().toUpperCase(),
-                role: 'student',
-                status: 'active',
-                isApproved: true,
-                approved: true,
-                updatedAt: serverTimestamp()
-              },
-              { merge: true }
-            );
-          }
-
-          // Lookup by Mobile Number
-          if (student.mobileNumber) {
-            const lookupMobileRef = doc(db, 'studentLookup', student.mobileNumber);
-            batch.set(
-              lookupMobileRef,
-              {
-                studentId,
-                sifNumber: student.sifNumber,
-                mobileNumber: student.mobileNumber,
-                dob: student.dob,
-                name: student.name,
-                rollNumber: student.rollNumber,
-                year,
-                departmentId: deptId,
-                departmentName: effectiveClassName,
-                section: section.trim().toUpperCase(),
-                role: 'student',
-                status: 'active',
-                isApproved: true,
-                approved: true,
-                updatedAt: serverTimestamp()
-              },
-              { merge: true }
-            );
-          }
         }
 
         await batch.commit();
         processed += chunk.length;
         setImportProgress(Math.round((processed / totalStudents) * 100));
       }
+
+      // Non-blocking background sync to Mongo Cloud Function
+      importStudents({ students: allMongoRecords }).catch(() => {});
 
       onImportSuccess?.(totalStudents);
       handleReset();

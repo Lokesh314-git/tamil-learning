@@ -143,67 +143,10 @@ export const mongoService = {
 
       const mimeType = file.type || 'application/pdf';
       const cleanFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const fileId = `mongo_file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const downloadUrl = `${MONGO_CONFIG.endpoints.download}/${fileId}`;
 
-      // 2. Upload to MongoDB GridFS via Cloud Function callable or REST API
-      let uploadResult = null;
-
-      try {
-        const uploadFn = httpsCallable(functions, 'uploadFileToMongo');
-        const response = await uploadFn({
-          fileBase64: base64Data,
-          fileName: cleanFileName,
-          mimeType,
-          metadata: {
-            title: metadata.title || file.name.replace(/\.[^/.]+$/, ''),
-            category: metadata.category || 'pdf_notes',
-            unitNumber: Number(metadata.unitNumber) || 1,
-            year: metadata.year || 'All Years',
-            departmentId: metadata.departmentId || 'all',
-            departmentName: metadata.departmentName || 'All Classes',
-            section: metadata.section || 'all',
-            subject: metadata.subject || 'Tamil',
-            description: metadata.description || '',
-            uploadedBy: metadata.uploadedBy || 'Admin',
-          }
-        });
-
-        if (response?.data?.success) {
-          uploadResult = response.data;
-        }
-      } catch (fnErr) {
-        console.warn('[MongoService] Callable upload error, falling back to HTTP API endpoint:', fnErr?.message);
-        
-        // Fallback to HTTP REST API
-        try {
-          const apiRes = await fetch(MONGO_CONFIG.endpoints.upload, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...await getBearerHeaders() },
-            body: JSON.stringify({
-              fileBase64: base64Data,
-              fileName: cleanFileName,
-              mimeType,
-              ...metadata,
-            })
-          });
-          if (apiRes.ok) {
-            uploadResult = await apiRes.json();
-          }
-        } catch (apiErr) {
-          console.warn('[MongoService] API endpoint fallback warning:', apiErr?.message);
-        }
-      }
-
-      if (typeof onProgress === 'function') onProgress(80);
-
-      const fileId = uploadResult?.fileId || `mongo_file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const downloadUrl = uploadResult?.downloadUrl || `${MONGO_CONFIG.endpoints.download}/${fileId}`;
-
-      // Store chunked document data in mongo_file_chunks collection for zero-failure real-time student retrieval
-      try {
-        await mongoService.storeFileChunks(fileId, base64Data);
-      } catch (chunkErr) {
-        console.warn('[MongoService] Chunk store notice:', chunkErr);
-      }
+      if (typeof onProgress === 'function') onProgress(60);
 
       // Cache document locally in sessionStorage for immediate fast preview
       try {
@@ -212,7 +155,7 @@ export const mongoService = {
         }
       } catch (_) {}
 
-      // Store clean metadata in downloads collection (without Base64 payload!)
+      // Store clean metadata in downloads collection and chunks in mongo_file_chunks concurrently
       const firestoreCleanPayload = {
         _id: fileId,
         id: fileId,
@@ -236,7 +179,26 @@ export const mongoService = {
         updatedAt: serverTimestamp(),
       };
 
-      await setDoc(doc(db, 'downloads', fileId), firestoreCleanPayload, { merge: true });
+      await Promise.all([
+        mongoService.storeFileChunks(fileId, base64Data),
+        setDoc(doc(db, 'downloads', fileId), firestoreCleanPayload, { merge: true })
+      ]);
+
+      if (typeof onProgress === 'function') onProgress(90);
+
+      // Non-blocking background sync to Mongo Cloud Function / API if active
+      (async () => {
+        try {
+          const uploadFn = httpsCallable(functions, 'uploadFileToMongo');
+          await uploadFn({
+            fileBase64: base64Data,
+            fileName: cleanFileName,
+            mimeType,
+            fileId,
+            metadata: firestoreCleanPayload
+          });
+        } catch (_) {}
+      })();
 
       if (typeof onProgress === 'function') onProgress(100);
 
@@ -576,7 +538,6 @@ export const mongoService = {
   async performFullMongoSync() {
     const targetCollections = [
       'users',
-      'studentLookup',
       'classes',
       'departments',
       'study_materials',

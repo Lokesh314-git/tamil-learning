@@ -10,108 +10,50 @@ service cloud.firestore {
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
       );
     }
-    function isStudent() {
-      return signedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student' &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isDeleted != true &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status != 'blocked' &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status != 'rejected' &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status != 'deleted' &&
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isApproved == true ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.approved == true ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active');
-    }
-    function ownsStudentRecord() {
-      return signedIn() && resource.data.studentId == request.auth.uid;
-    }
-    function writesOwnStudentRecord() {
-      return isStudent() && request.resource.data.studentId == request.auth.uid;
-    }
 
-    // Students cannot read or modify lookup credentials; administrators can maintain them.
-    match /studentLookup/{identifier} { allow read, write: if isAdmin(); }
-    match /{collectionName}/{studentId} {
-      allow read, write: if collectionName == 'students data' && isAdmin();
-    }
-
+    // Student / User profiles
     match /users/{userId} {
-      allow read: if isAdmin() || (signedIn() && request.auth.uid == userId);
-      allow create: if isAdmin() || (signedIn() && request.auth.uid == userId &&
-        request.resource.data.role == 'student' && request.resource.data.status == 'pending');
-      allow update: if isAdmin() || (isStudent() && request.auth.uid == userId &&
-        request.resource.data.role == resource.data.role &&
-        request.resource.data.isApproved == resource.data.isApproved &&
-        request.resource.data.approved == resource.data.approved &&
-        request.resource.data.status == resource.data.status &&
-        request.resource.data.isDeleted == resource.data.isDeleted);
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
       allow delete: if isAdmin();
     }
 
-    // Authenticated students can read assigned academic content. Writes are admin-only.
-    match /departments/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /classes/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /units/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /studyMaterials/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /study_materials/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /tests/{id} { allow read, write: if isAdmin(); }
-    match /publishedTests/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /quizzes/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /tasks/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /assignments/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /announcements/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /thirukkurals/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /downloads/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
+    // Academic content (Units, Materials, Tests, Tasks, Announcements, Downloads, etc.)
+    match /departments/{id} { allow read: if true; allow write: if true; }
+    match /classes/{id} { allow read: if true; allow write: if true; }
+    match /units/{id} { allow read: if true; allow write: if true; }
+    match /studyMaterials/{id} { allow read: if true; allow write: if true; }
+    match /study_materials/{id} { allow read: if true; allow write: if true; }
+    match /tests/{id} { allow read: if true; allow write: if true; }
+    match /publishedTests/{id} { allow read: if true; allow write: if true; }
+    match /quizzes/{id} { allow read: if true; allow write: if true; }
+    match /tasks/{id} { allow read: if true; allow write: if true; }
+    match /assignments/{id} { allow read: if true; allow write: if true; }
+    match /announcements/{id} { allow read: if true; allow write: if true; }
+    match /thirukkurals/{id} { allow read: if true; allow write: if true; }
+    match /downloads/{id} { allow read: if true; allow write: if true; }
+    match /notifications/{id} { allow read: if true; allow write: if true; }
+    match /settings/{id} { allow read: if true; allow write: if true; }
 
-    // Student generated data is scoped by studentId; admins manage and review it.
-    match /attendance/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow create, update: if isAdmin();
-      allow delete: if isAdmin();
-    }
-    match /results/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow write: if isAdmin();
-    }
-    match /testResults/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow write: if isAdmin();
-    }
-    match /reports/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow write: if isAdmin();
-    }
-    match /notes/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow create: if isAdmin() || writesOwnStudentRecord();
-      allow update: if isAdmin() || (ownsStudentRecord() && writesOwnStudentRecord());
-      allow delete: if isAdmin() || ownsStudentRecord();
-    }
-    match /task_submissions/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow create, update: if isAdmin() || writesOwnStudentRecord();
-      allow delete: if isAdmin();
-    }
-    match /taskSubmissions/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow create, update: if isAdmin() || writesOwnStudentRecord();
-      allow delete: if isAdmin();
-    }
-    match /assignmentSubmissions/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow write: if isAdmin() || writesOwnStudentRecord();
-    }
-    match /feedback/{id} {
-      allow read: if isAdmin() || ownsStudentRecord();
-      allow create: if isAdmin() || writesOwnStudentRecord();
-      allow update, delete: if isAdmin();
-    }
-    match /notifications/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /settings/{id} { allow read: if isAdmin() || (isStudent() && id == 'features'); allow write: if isAdmin(); }
-    match /mongo_file_chunks/{id} { allow read: if isStudent() || isAdmin(); allow write: if isAdmin(); }
-    match /mongo_sync_queue/{id} { allow read, write: if isAdmin(); }
-    match /logs/{id} { allow read, write: if isAdmin(); }
-    match /auditLogs/{id} { allow read, write: if isAdmin(); }
-    match /{document=**} { allow read, write: if false; }
+    // Student interactive collections
+    match /attendance/{id} { allow read, write: if true; }
+    match /results/{id} { allow read, write: if true; }
+    match /testResults/{id} { allow read, write: if true; }
+    match /reports/{id} { allow read, write: if true; }
+    match /notes/{id} { allow read, write: if true; }
+    match /task_submissions/{id} { allow read, write: if true; }
+    match /taskSubmissions/{id} { allow read, write: if true; }
+    match /assignmentSubmissions/{id} { allow read, write: if true; }
+    match /feedback/{id} { allow read, write: if true; }
+    match /student_preferences/{id} { allow read, write: if true; }
+    match /preferences/{id} { allow read, write: if true; }
+    match /documents/{id} { allow read, write: if true; }
+    match /mongo_file_chunks/{id} { allow read, write: if true; }
+    match /mongo_sync_queue/{id} { allow read, write: if true; }
+    match /logs/{id} { allow read, write: if true; }
+    match /auditLogs/{id} { allow read, write: if true; }
+
+    match /{document=**} { allow read, write: if true; }
   }
 }

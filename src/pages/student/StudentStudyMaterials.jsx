@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from '../../services/studentMongoApi';
+import { studentMongoApi } from '../../services/studentMongoApi';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { openOrDownloadFile } from '../../utils/fileUpload';
@@ -47,15 +48,16 @@ const StudentStudyMaterials = () => {
   const [selectedUnit, setSelectedUnit] = useState('all');
   const [selectedSubject, setSelectedSubject] = useState('all');
   const [viewingMaterial, setViewingMaterial] = useState(null);
-  const [bookmarks, setBookmarks] = useState(() => {
-    try {
-      const saved = localStorage.getItem(`student_bookmarks_${user?.uid || 'guest'}`);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [bookmarks, setBookmarks] = useState([]);
   const [showBookmarksOnly, setShowBookmarksOnly] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    studentMongoApi.getPreferences().then((preferences) => {
+      if (active) setBookmarks(Array.isArray(preferences.bookmarkedMaterialIds) ? preferences.bookmarkedMaterialIds : []);
+    }).catch((error) => console.warn('Could not load material bookmarks:', error));
+    return () => { active = false; };
+  }, [user?.uid]);
 
   useEffect(() => {
     if (!year || !profile?.departmentId) {
@@ -127,11 +129,7 @@ const StudentStudyMaterials = () => {
   const toggleBookmark = (id) => {
     setBookmarks((prev) => {
       const next = prev.includes(id) ? prev.filter((b) => b !== id) : [...prev, id];
-      try {
-        localStorage.setItem(`student_bookmarks_${user?.uid || 'guest'}`, JSON.stringify(next));
-      } catch (err) {
-        console.warn('Failed to save bookmark:', err);
-      }
+      studentMongoApi.updatePreferences({ bookmarkedMaterialIds: next }).catch((err) => console.warn('Failed to save bookmark:', err));
       return next;
     });
   };

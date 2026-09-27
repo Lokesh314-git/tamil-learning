@@ -19,8 +19,9 @@ import { db } from '../../firebase';
 import EmptyState from '../../components/EmptyState';
 import FullScreenLoader from '../../components/FullScreenLoader';
 import { filterByActiveStudentIds, getActiveStudentIds, getActiveStudents } from '../../utils/studentFilters';
+import { YEARS } from '../../utils/departments';
 
-const years = ['1st Year', '2nd Year', '3rd Year'];
+const years = YEARS;
 
 const AdminReports = () => {
   const [activeYear, setActiveYear] = useState('1st Year');
@@ -30,7 +31,7 @@ const AdminReports = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [detail, setDetail] = useState(null);
-  const [sortType, setSortType] = useState('name-asc');
+  const [sortType, setSortType] = useState('rank-asc');
   const [departments, setDepartments] = useState([]);
   const [activeDepartmentId, setActiveDepartmentId] = useState('all');
 
@@ -52,8 +53,8 @@ const AdminReports = () => {
     setLoadError('');
     const unsubs = [];
     const qStudents = query(collection(db, 'users'), where('role', '==', 'student'), where('year', '==', activeYear));
-    const qTests = query(collection(db, 'tests'), where('year', '==', activeYear));
-    const qResults = query(collection(db, 'results'), where('year', '==', activeYear));
+    const qTests = collection(db, 'tests');
+    const qResults = collection(db, 'results');
 
     let received = 0;
     const checkDone = () => {
@@ -75,7 +76,13 @@ const AdminReports = () => {
 
     unsubs.push(onSnapshot(qTests, (snap) => {
       const t = [];
-      snap.forEach((d) => t.push({ id: d.id, ...d.data() }));
+      snap.forEach((d) => {
+        const data = d.data();
+        const tYear = data.year || 'All Years';
+        if (tYear === 'All Years' || tYear === 'All' || tYear === 'all' || tYear.toLowerCase() === activeYear.toLowerCase()) {
+          t.push({ id: d.id, ...data });
+        }
+      });
       setTests(t);
       checkDone();
     }, (err) => {
@@ -113,15 +120,19 @@ const AdminReports = () => {
     const testCount = tests.length || 1;
     const priority = { Completed: 1, 'In Progress': 2, 'Not Started': 3 };
 
-    const rows = activeStudents.map((s) => {
-      const myResults = visibleResults.filter((r) => r.studentId === s.uid);
+    const initialRows = activeStudents.map((s) => {
+      const myResults = visibleResults.filter((r) => r.studentId === s.uid || r.studentId === s.id);
       const completed = myResults.length;
       const progress = Math.round((completed / testCount) * 100);
       const avgScore = myResults.length
-        ? Math.round((myResults.reduce((acc, r) => acc + (r.score / (r.total || 1)) * 100, 0) / myResults.length))
+        ? Math.round(myResults.reduce((acc, r) => acc + ((Number(r.score) || 0) / (Number(r.total || r.totalQuestions) || 1)) * 100, 0) / myResults.length)
         : 0;
-      const latest = myResults.sort((a, b) => (b.submittedAt?.seconds || 0) - (a.submittedAt?.seconds || 0))[0];
-      const latestScore = latest ? Math.round((latest.score / (latest.total || 1)) * 100) : 0;
+      const latest = myResults.sort((a, b) => {
+        const timeA = a.submittedAt?.toDate ? a.submittedAt.toDate().getTime() : (a.timestamp ? new Date(a.timestamp).getTime() : 0);
+        const timeB = b.submittedAt?.toDate ? b.submittedAt.toDate().getTime() : (b.timestamp ? new Date(b.timestamp).getTime() : 0);
+        return timeB - timeA;
+      })[0];
+      const latestScore = latest ? Math.round(((Number(latest.score) || 0) / (Number(latest.total || latest.totalQuestions) || 1)) * 100) : 0;
       const status =
         completed === 0
           ? 'Not Started'
@@ -143,12 +154,36 @@ const AdminReports = () => {
       };
     });
 
-    return rows.sort((a, b) => {
+    // Compute standard rank sorted by avgScore desc, then completed desc
+    const sortedForRank = [...initialRows].sort((a, b) => {
+      if (b.avgScore !== a.avgScore) return b.avgScore - a.avgScore;
+      if (b.completed !== a.completed) return b.completed - a.completed;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    let currentRank = 1;
+    const rankedRows = sortedForRank.map((r, idx) => {
+      if (idx > 0) {
+        const prev = sortedForRank[idx - 1];
+        if (prev.avgScore !== r.avgScore || prev.completed !== r.completed) {
+          currentRank = idx + 1;
+        }
+      }
+      return {
+        ...r,
+        rank: r.completed > 0 ? currentRank : '-',
+        rankNum: r.completed > 0 ? currentRank : 9999,
+      };
+    });
+
+    return rankedRows.sort((a, b) => {
+      if (sortType === 'rank-asc') return a.rankNum - b.rankNum;
+      if (sortType === 'avg-desc') return b.avgScore - a.avgScore;
       if (sortType === 'name-asc') return (a.name || '').localeCompare(b.name || '');
       if (sortType === 'name-desc') return (b.name || '').localeCompare(a.name || '');
       if (sortType === 'status') return a.statusPriority - b.statusPriority;
       if (sortType === 'progress') return b.progress - a.progress;
-      return (a.name || '').localeCompare(b.name || '');
+      return a.rankNum - b.rankNum;
     });
   }, [activeStudents, tests, visibleResults, sortType]);
 
@@ -277,6 +312,8 @@ const AdminReports = () => {
               value={sortType}
               onChange={(e) => setSortType(e.target.value)}
             >
+              <option value="rank-asc">Rank (Highest First)</option>
+              <option value="avg-desc">Average Score (High to Low)</option>
               <option value="name-asc">Name (A to Z)</option>
               <option value="name-desc">Name (Z to A)</option>
               <option value="status">Status (Completed First)</option>
@@ -294,6 +331,7 @@ const AdminReports = () => {
                 <table className="table progress-table report-table">
                   <thead>
                     <tr>
+                      <th style={{ width: 65, textAlign: 'center' }}>Rank</th>
                       <th>Name</th>
                       <th>SIF Number</th>
                       <th>Tests Completed</th>
@@ -308,6 +346,21 @@ const AdminReports = () => {
                   <tbody>
                     {studentRows.map((r) => (
                       <tr key={r.uid}>
+                        <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                          {r.rank === 1 ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', background: '#fef3c7', color: '#b45309', fontWeight: 800 }}>🥇</span>
+                          ) : r.rank === 2 ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', background: '#f1f5f9', color: '#475569', fontWeight: 800 }}>🥈</span>
+                          ) : r.rank === 3 ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', background: '#ffedd5', color: '#c2410c', fontWeight: 800 }}>🥉</span>
+                          ) : r.rank !== '-' ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '2px 8px', borderRadius: 12, background: 'var(--color-bg)', border: '1px solid var(--color-border)', fontSize: 12, color: 'var(--color-text-muted)' }}>
+                              #{r.rank}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--color-text-muted)' }}>-</span>
+                          )}
+                        </td>
                         <td style={{ fontWeight: 600 }}>{r.name}</td>
                         <td className="email-cell" style={{ fontWeight: 600, color: '#2563eb', fontFamily: 'monospace' }}>
                           {r.sifNumber || r.email || '-'}
@@ -402,7 +455,13 @@ const AdminReports = () => {
             </div>
 
             <div className="report-detail-section-label">Performance Metrics</div>
-            <div className="report-detail-grid report-detail-grid-3">
+            <div className="report-detail-grid report-detail-grid-4">
+              <div className="report-detail-item">
+                <div className="label"><Award size={13} /> Year Rank</div>
+                <div className="value" style={{ color: detail.rank === 1 ? '#d97706' : '#2563eb', fontWeight: 800 }}>
+                  {detail.rank !== '-' ? `#${detail.rank}` : 'Unranked'}
+                </div>
+              </div>
               <div className="report-detail-item">
                 <div className="label"><FileText size={13} /> Tests Done</div>
                 <div className="value">{detail.completed} / {detail.totalTests}</div>

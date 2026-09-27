@@ -4,8 +4,10 @@ import {
   doc,
   onSnapshot,
   query,
+  setDoc,
   updateDoc,
   deleteDoc,
+  addDoc,
   serverTimestamp
 } from 'firebase/firestore';
 import { db } from '../../firebase';
@@ -42,15 +44,29 @@ const AdminFeedbackPage = () => {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
+  const getTicketTime = (item) => {
+    if (!item) return 0;
+    if (item.createdAt?.toDate) return item.createdAt.toDate().getTime();
+    if (item.createdAt instanceof Date) return item.createdAt.getTime();
+    if (typeof item.createdAt === 'string') {
+      const t = new Date(item.createdAt).getTime();
+      if (!Number.isNaN(t)) return t;
+    }
+    if (typeof item.createdAt === 'number') return item.createdAt;
+    if (item.timestamp?.toDate) return item.timestamp.toDate().getTime();
+    if (item.timestamp) {
+      const t = new Date(item.timestamp).getTime();
+      if (!Number.isNaN(t)) return t;
+    }
+    if (item.updatedAt?.toDate) return item.updatedAt.toDate().getTime();
+    return 0;
+  };
+
   useEffect(() => {
     setLoading(true);
     const unsub = onSnapshot(query(collection(db, 'feedback')), (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      list.sort((a, b) => {
-        const timeA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
-        const timeB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
-        return timeB - timeA;
-      });
+      list.sort((a, b) => getTicketTime(b) - getTicketTime(a));
       setTickets(list);
       setLoading(false);
     }, (err) => {
@@ -63,47 +79,106 @@ const AdminFeedbackPage = () => {
 
   const filteredTickets = useMemo(() => {
     return tickets.filter((t) => {
-      const statusMatch = selectedStatus === 'all' || (t.status || 'open') === selectedStatus;
+      const isResolved = t.status === 'resolved';
+      const hasReply = Boolean(t.adminReply || t.reply || t.response || t.adminResponse);
+      const isInProgress = t.status === 'in_progress' || (hasReply && !isResolved);
+      const isOpen = !isResolved && !isInProgress;
+
+      let statusMatch = true;
+      if (selectedStatus === 'open') statusMatch = isOpen;
+      else if (selectedStatus === 'in_progress') statusMatch = isInProgress;
+      else if (selectedStatus === 'resolved') statusMatch = isResolved;
+
       const searchMatch = !searchQuery.trim() ||
         (t.subject || t.title || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         (t.studentName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (t.studentRoll || t.sifNumber || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         (t.message || '').toLowerCase().includes(searchQuery.toLowerCase());
+
       return statusMatch && searchMatch;
     });
   }, [tickets, selectedStatus, searchQuery]);
 
   const handleSendReply = async (e) => {
     e.preventDefault();
-    if (!replyTicket || !replyText.trim()) return;
+    const text = replyText.trim();
+    const currentTicket = replyTicket;
+    if (!currentTicket || !text) return;
 
-    setSubmitting(true);
+    const currentStatus = statusUpdate;
     setError('');
-    setMessage('');
 
+    // Optimistically update tickets for snappy zero-delay UI response
+    setTickets((prev) =>
+      prev.map((t) =>
+        t.id === currentTicket.id
+          ? {
+              ...t,
+              adminReply: text,
+              status: currentStatus,
+              repliedAt: new Date(),
+              updatedAt: new Date(),
+            }
+          : t
+      )
+    );
+
+    // Close modal immediately
+    setReplyTicket(null);
+    setReplyText('');
+    setMessage('Response sent to student and ticket updated.');
+
+    // Save to Firestore in background
     try {
-      await updateDoc(doc(db, 'feedback', replyTicket.id), {
-        adminReply: replyText.trim(),
-        status: statusUpdate,
+      const updateData = {
+        adminReply: text,
+        reply: text,
+        response: text,
+        adminResponse: text,
+        status: currentStatus,
+        studentRead: false,
         repliedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
+      };
 
-      setMessage('Response sent to student and ticket updated.');
-      setReplyTicket(null);
-      setReplyText('');
+      const docRef = doc(db, 'feedback', currentTicket.id);
+      await Promise.race([
+        setDoc(docRef, updateData, { merge: true }),
+        new Promise((resolve) => setTimeout(resolve, 2500))
+      ]);
+
+      // If feedback has a studentId or userId, also dispatch an individual notification alert
+      const targetStudent = currentTicket.studentId || currentTicket.userId;
+      if (targetStudent) {
+        addDoc(collection(db, 'notifications'), {
+          title: '💬 Teacher Replied to Your Feedback',
+          body: `Admin replied to your query "${currentTicket.subject || 'Support Ticket'}": "${text.substring(0, 70)}..."`,
+          type: 'feedback',
+          category: 'feedback',
+          targetUserId: targetStudent,
+          studentId: targetStudent,
+          targetScope: 'individual',
+          recipientRole: 'student',
+          read: false,
+          isRead: false,
+          createdAt: serverTimestamp(),
+        }).catch(() => {});
+      }
     } catch (err) {
-      setError(err.message || 'Failed to reply to ticket.');
-    } finally {
-      setSubmitting(false);
+      console.warn('Feedback update background error:', err);
     }
   };
 
   const handleDeleteTicket = async (id) => {
+    setTickets((prev) => prev.filter((t) => t.id !== id));
+    setMessage('Ticket deleted successfully.');
     try {
-      await deleteDoc(doc(db, 'feedback', id));
-      setMessage('Ticket deleted successfully.');
+      await Promise.race([
+        deleteDoc(doc(db, 'feedback', id)),
+        new Promise((resolve) => setTimeout(resolve, 2500))
+      ]);
     } catch (err) {
-      setError(err.message || 'Failed to delete ticket.');
+      console.warn('Delete ticket background error:', err);
     }
   };
 

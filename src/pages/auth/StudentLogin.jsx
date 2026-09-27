@@ -21,19 +21,16 @@ const StudentLogin = () => {
     setError('');
     try {
       const studentProfile = await loginStudentWithCredentials({ identifier: cleanId, dob: cleanDob });
+      if (studentProfile?.role === 'admin') {
+        navigate('/admin/dashboard', { replace: true });
+        return;
+      }
       const targetYear = studentProfile?.year || '1st Year';
       navigate('/student/year/' + encodeURIComponent(targetYear) + '/dashboard', { replace: true });
     } catch (err) {
-      if (err?.code === 'student-not-found')
-        setError('Student record not found. Please check your SIF or Mobile number.');
-      else if (err?.code === 'dob-mismatch')
-        setError('Date of Birth does not match our records.');
-      else if (err?.code === 'account-deleted')
-        setError('Your account has been removed. Please contact your administrator.');
-      else if (err?.code === 'account-blocked')
-        setError('Your account is inactive. Please contact your administrator.');
-      else
-        setError(err?.message || 'Login failed. Please verify your credentials.');
+      setError(err?.status === 401
+        ? 'Invalid Mobile Number/SIF Number or Date of Birth.'
+        : err?.message || 'Student sign-in service is temporarily unavailable. Please try again.');
     } finally {
       setLoading(false);
     }

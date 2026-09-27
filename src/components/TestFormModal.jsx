@@ -24,7 +24,7 @@ const createQuestion = (id, source) => ({
       : 0
 });
 
-const buildInitialForm = (initial, nextQuestionIdRef) => {
+const buildInitialForm = (initial, nextQuestionIdRef, defaultYear = '1st Year', defaultDeptId = 'all') => {
   nextQuestionIdRef.current = 1;
   const sourceQuestions =
     Array.isArray(initial?.questions) && initial.questions.length > 0
@@ -37,6 +37,10 @@ const buildInitialForm = (initial, nextQuestionIdRef) => {
   });
   return {
     title: initial?.title || '',
+    year: initial?.year || defaultYear || '1st Year',
+    departmentId: initial?.departmentId || defaultDeptId || 'all',
+    testType: initial?.testType || 'quiz',
+    passMark: initial?.passMark || 40,
     unitNumber: Number(initial?.unitNumber) || 1,
     subject: initial?.subject || 'Tamil',
     testDate: initial?.testDate || new Date().toISOString().split('T')[0],
@@ -177,15 +181,15 @@ const TestFormModal = ({
   selectedDepartmentId = 'all'
 }) => {
   const nextQuestionIdRef = useRef(1);
-  const [form, setForm] = useState(() => buildInitialForm(initial, nextQuestionIdRef));
+  const [form, setForm] = useState(() => buildInitialForm(initial, nextQuestionIdRef, year, selectedDepartmentId));
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (open) {
-      setForm(buildInitialForm(initial, nextQuestionIdRef));
+      setForm(buildInitialForm(initial, nextQuestionIdRef, year, selectedDepartmentId));
       setError('');
     }
-  }, [initial, open]);
+  }, [initial, open, year, selectedDepartmentId]);
 
   const onFieldChange = useCallback((key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -253,13 +257,17 @@ const TestFormModal = ({
 
     onSave({
       title: form.title,
+      year: form.year,
+      departmentId: form.departmentId,
+      testType: form.testType,
+      passMark: Number(form.passMark) || 40,
       unitNumber: form.unitNumber,
       subject: form.subject,
       testDate: form.testDate,
       testTime: form.testTime,
       duration: form.duration,
       description: form.description,
-      targetType: form.targetType,
+      targetType: form.year && form.year !== 'All Years' ? 'year' : (form.targetType || 'all'),
       targetSection: form.targetSection,
       notifyStudents: form.notifyStudents,
       questions: form.questions.map(({ id, ...question }) => question)
@@ -272,7 +280,7 @@ const TestFormModal = ({
       onClose={onClose}
       size="xl"
       title={initial?.id ? 'Update Assessment & Quiz' : 'Create Assessment & Quiz'}
-      subtitle={`Configure test questions, timing, and automated student notifications for ${year || 'all classes'}`}
+      subtitle={`Configure test questions, timing, target academic year, and automated student notifications`}
       icon={BookOpenCheck}
       iconVariant="primary"
       footer={
@@ -310,6 +318,54 @@ const TestFormModal = ({
             value={form.title}
             onChange={(e) => onFieldChange('title', e.target.value)}
           />
+        </div>
+
+        {/* Academic Year & Target Department Selection */}
+        <div className="grid grid-3" style={{ gap: 14 }}>
+          <div className="form-group">
+            <label className="form-label">Target Academic Year *</label>
+            <select
+              className="input"
+              value={form.year}
+              onChange={(e) => onFieldChange('year', e.target.value)}
+              style={{ fontWeight: 600, color: 'var(--color-primary)' }}
+            >
+              <option value="All Years">All Years (அனைத்து ஆண்டுகள்)</option>
+              <option value="1st Year">1st Year (முதலாம் ஆண்டு)</option>
+              <option value="2nd Year">2nd Year (இரண்டாம் ஆண்டு)</option>
+              <option value="3rd Year">3rd Year (மூன்றாம் ஆண்டு)</option>
+              <option value="4th Year">4th Year (நான்காம் ஆண்டு)</option>
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Target Class / Department</label>
+            <select
+              className="input"
+              value={form.departmentId}
+              onChange={(e) => onFieldChange('departmentId', e.target.value)}
+            >
+              <option value="all">All Classes / Departments</option>
+              {departments.map((dept) => (
+                <option key={dept.id} value={dept.id}>
+                  {dept.name} {dept.year ? `(${dept.year})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Assessment Type</label>
+            <select
+              className="input"
+              value={form.testType}
+              onChange={(e) => onFieldChange('testType', e.target.value)}
+            >
+              <option value="quiz">Quiz Test</option>
+              <option value="unit_test">Unit Test</option>
+              <option value="mock_test">Mock / Semester Exam</option>
+            </select>
+          </div>
         </div>
 
         <div className="grid grid-2" style={{ gap: 14 }}>

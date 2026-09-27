@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from '../../services/studentMongoApi';
+import { studentMongoApi } from '../../services/studentMongoApi';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import StudentPageHeader from '../../components/studentui/StudentPageHeader';
@@ -22,6 +23,8 @@ import {
   FileText
 } from 'lucide-react';
 
+import { useNotificationBadges } from '../../context/NotificationBadgeContext';
+
 const CATEGORY_TABS = [
   { id: 'all', label: 'All Notifications' },
   { id: 'tests', label: 'Tests & Quizzes' },
@@ -34,18 +37,20 @@ const CATEGORY_TABS = [
 const StudentNotifications = () => {
   const { year } = useParams();
   const { profile, user } = useAuth();
+  const { markItemAsRead, markSectionAsSeen } = useNotificationBadges();
 
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [readIds, setReadIds] = useState(() => {
-    try {
-      const saved = localStorage.getItem(`student_read_notifications_${user?.uid || 'guest'}`);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [readIds, setReadIds] = useState([]);
+
+  useEffect(() => {
+    let active = true;
+    studentMongoApi.getPreferences().then((preferences) => {
+      if (active) setReadIds(Array.isArray(preferences.readNotificationIds) ? preferences.readNotificationIds : []);
+    }).catch((error) => console.warn('Could not load notification read state:', error));
+    return () => { active = false; };
+  }, [user?.uid]);
 
   useEffect(() => {
     setLoading(true);
@@ -59,67 +64,91 @@ const StudentNotifications = () => {
       });
       setNotifications(list);
       setLoading(false);
+
+      // Automatically mark fetched notifications as read on view so badge stays 0 next time
+      if (list.length > 0) {
+        const ids = list.map((n) => n.id);
+        ids.forEach((id) => markItemAsRead && markItemAsRead(id));
+        if (markSectionAsSeen) markSectionAsSeen('notifications');
+        studentMongoApi.updatePreferences({ readNotificationIds: ids }).catch(() => {});
+      }
     }, (err) => {
       console.warn('Notifications listener err:', err);
       setLoading(false);
     });
 
     return () => unsub();
-  }, []);
+  }, [markItemAsRead, markSectionAsSeen]);
 
   const markAsRead = (id) => {
     if (readIds.includes(id)) return;
     const next = [...readIds, id];
     setReadIds(next);
-    try {
-      localStorage.setItem(`student_read_notifications_${user?.uid || 'guest'}`, JSON.stringify(next));
-    } catch (err) {
-      console.warn('Failed to save read state:', err);
-    }
+    if (markItemAsRead) markItemAsRead(id);
+    studentMongoApi.updatePreferences({ readNotificationIds: next }).catch((err) => console.warn('Failed to save read state:', err));
   };
 
   const markAllAsRead = () => {
     const allIds = notifications.map((n) => n.id);
     setReadIds(allIds);
-    try {
-      localStorage.setItem(`student_read_notifications_${user?.uid || 'guest'}`, JSON.stringify(allIds));
-    } catch (err) {
-      console.warn('Failed to save read state:', err);
-    }
+    allIds.forEach((id) => markItemAsRead && markItemAsRead(id));
+    if (markSectionAsSeen) markSectionAsSeen('notifications');
+    studentMongoApi.updatePreferences({ readNotificationIds: allIds }).catch((err) => console.warn('Failed to save read state:', err));
   };
 
   const filteredNotifications = useMemo(() => {
     return notifications.filter((n) => {
-      // Target scope match
-      if (n.targetScope === 'individual' && n.targetStudentId && n.targetStudentId !== user?.uid) {
+      // Exclude admin-directed alerts
+      if (n.recipientRole === 'admin') return false;
+
+      // Direct student match
+      if (n.targetStudentId && n.targetStudentId !== 'all' && n.targetStudentId !== user?.uid) {
         return false;
       }
-      if (n.targetScope === 'year' && n.targetYear && n.targetYear !== 'all' && n.targetYear !== year) {
+      if (n.targetUserId && n.targetUserId !== 'all' && n.targetUserId !== user?.uid) {
         return false;
       }
-      if (n.targetScope === 'department' && n.targetDepartmentId && n.targetDepartmentId !== 'all' && n.targetDepartmentId !== profile?.departmentId) {
-        return false;
+
+      // Year match
+      const notifYear = n.targetYear || n.year;
+      if (notifYear && notifYear !== 'all' && notifYear !== 'All' && notifYear !== 'All Years') {
+        if (notifYear.toLowerCase() !== (year || profile?.year || '').toLowerCase()) {
+          return false;
+        }
       }
-      if (n.targetSection && n.targetSection !== 'all' && profile?.section && n.targetSection.toUpperCase() !== profile.section.toUpperCase()) {
-        return false;
+
+      // Department / Class match
+      const notifDept = n.targetDepartmentId || n.targetDeptId || n.departmentId;
+      if (notifDept && notifDept !== 'all' && notifDept !== 'All') {
+        if (profile?.departmentId && String(notifDept).toLowerCase() !== String(profile.departmentId).toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Section match
+      const notifSec = n.targetSection || n.section;
+      if (notifSec && notifSec !== 'all' && notifSec !== 'All') {
+        if (profile?.section && String(notifSec).trim().toUpperCase() !== String(profile.section).trim().toUpperCase()) {
+          return false;
+        }
       }
 
       // Category match
       if (selectedCategory !== 'all') {
         const titleLower = (n.title || '').toLowerCase();
-        const bodyLower = (n.body || '').toLowerCase();
+        const bodyLower = (n.body || n.message || '').toLowerCase();
         const catLower = (n.category || '').toLowerCase();
 
         if (selectedCategory === 'tests' && !titleLower.includes('test') && !titleLower.includes('quiz') && !catLower.includes('test')) return false;
         if (selectedCategory === 'assignments' && !titleLower.includes('assignment') && !titleLower.includes('task') && !catLower.includes('task')) return false;
-        if (selectedCategory === 'announcements' && !titleLower.includes('announcement') && !titleLower.includes('notice') && !catLower.includes('notice')) return false;
+        if (selectedCategory === 'announcements' && !titleLower.includes('announcement') && !titleLower.includes('notice') && !catLower.includes('notice') && !catLower.includes('announcement')) return false;
         if (selectedCategory === 'attendance' && !titleLower.includes('attendance') && !bodyLower.includes('attendance') && !catLower.includes('attendance')) return false;
         if (selectedCategory === 'results' && !titleLower.includes('result') && !titleLower.includes('score') && !titleLower.includes('mark') && !catLower.includes('result')) return false;
       }
 
       return true;
     });
-  }, [notifications, user?.uid, year, profile?.departmentId, profile?.section, selectedCategory]);
+  }, [notifications, user?.uid, year, profile?.year, profile?.departmentId, profile?.section, selectedCategory]);
 
   const unreadCount = useMemo(() => {
     return filteredNotifications.filter((n) => !readIds.includes(n.id)).length;

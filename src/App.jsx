@@ -3,7 +3,6 @@ import { Helmet } from 'react-helmet-async';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import LoginSelection from './pages/auth/LoginSelection';
 import StudentLogin from './pages/auth/StudentLogin';
-import StudentSignup from './pages/auth/StudentSignup';
 import AdminLogin from './pages/auth/AdminLogin';
 import ProtectedRoute from './components/ProtectedRoute';
 import PublicRoute from './components/PublicRoute';
@@ -64,7 +63,6 @@ const App = () => {
         <Route element={<PublicRoute />}>
           <Route path="/auth" element={<LoginSelection />} />
           <Route path="/auth/student-login" element={<StudentLogin />} />
-          <Route path="/auth/student-signup" element={<StudentSignup />} />
           <Route path="/auth/admin-login" element={<AdminLogin />} />
         </Route>
 

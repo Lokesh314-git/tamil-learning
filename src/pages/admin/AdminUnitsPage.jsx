@@ -175,7 +175,10 @@ const AdminUnitsPage = () => {
     if (!deleteTarget) return;
     try {
       await deleteDoc(doc(db, 'units', deleteTarget.id));
-      setMessage('Unit removed successfully.');
+      if (deleteTarget.fileId || deleteTarget.id) {
+        await mongoService.deleteFileFromGridFS(deleteTarget.fileId || deleteTarget.id);
+      }
+      setMessage('Unit and associated assets removed successfully from Firebase and MongoDB.');
     } catch (err) {
       setError(err.message || 'Failed to remove unit.');
     } finally {

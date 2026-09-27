@@ -2,6 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useYear } from '../context/YearContext';
+import { useNotificationBadges } from '../context/NotificationBadgeContext';
 import logoImg from '../assets/logo.png';
 import {
   LayoutDashboard,
@@ -29,18 +30,18 @@ const years = ['1st Year', '2nd Year', '3rd Year'];
 
 const academicNav = [
   { to: '/admin/dashboard',        label: 'Dashboard',             Icon: LayoutDashboard, end: true },
-  { to: '/admin/students',         label: 'Student Management',    Icon: Users },
-  { to: '/admin/attendance',       label: 'Attendance Management', Icon: UserCheck },
+  { to: '/admin/students',         label: 'Student Management',    Icon: Users,            badgeKey: 'students' },
+  { to: '/admin/attendance',       label: 'Attendance Management', Icon: UserCheck,        badgeKey: 'attendance' },
   { to: '/admin/classes',          label: 'Classes & Sections',    Icon: BookOpen },
-  { to: '/admin/study-materials',  label: 'Study Materials Hub',   Icon: FileText },
-  { to: '/admin/units',            label: 'Units (1 to 5)',        Icon: Layers },
-  { to: '/admin/tests',            label: 'Online Assessments',    Icon: ClipboardList },
-  { to: '/admin/assignments',      label: 'Assignments & Tasks',   Icon: ListTodo },
-  { to: '/admin/announcements',    label: 'Notice Board',          Icon: Megaphone },
-  { to: '/admin/notifications',    label: 'Push Alerts (FCM)',     Icon: Bell },
-  { to: '/admin/feedback',         label: 'Student Feedback',      Icon: MessageSquare },
-  { to: '/admin/downloads',        label: 'Downloads & Storage',   Icon: DownloadCloud },
-  { to: '/admin/notes',            label: 'Student Notes',         Icon: StickyNote },
+  { to: '/admin/study-materials',  label: 'Study Materials Hub',   Icon: FileText,         badgeKey: 'studyMaterials' },
+  { to: '/admin/units',            label: 'Units (1 to 5)',        Icon: Layers,           badgeKey: 'units' },
+  { to: '/admin/tests',            label: 'Online Assessments',    Icon: ClipboardList,    badgeKey: 'tests' },
+  { to: '/admin/assignments',      label: 'Assignments & Tasks',   Icon: ListTodo,         badgeKey: 'assignments' },
+  { to: '/admin/announcements',    label: 'Notice Board',          Icon: Megaphone,        badgeKey: 'announcements' },
+  { to: '/admin/notifications',    label: 'Push Alerts (FCM)',     Icon: Bell,             badgeKey: 'notifications' },
+  { to: '/admin/feedback',         label: 'Student Feedback',      Icon: MessageSquare,    badgeKey: 'feedback' },
+  { to: '/admin/downloads',        label: 'Downloads & Storage',   Icon: DownloadCloud,    badgeKey: 'downloads' },
+  { to: '/admin/notes',            label: 'Student Notes',         Icon: StickyNote,       badgeKey: 'notes' },
 ];
 
 const systemNav = [
@@ -51,9 +52,12 @@ const systemNav = [
 ];
 
 const AdminSidebar = ({ onNavigate }) => {
-  const { logout, user } = useAuth();
+  const { logout, user, profile } = useAuth();
   const { selectedYear } = useYear();
-  const initial = (user?.email || 'A').charAt(0).toUpperCase();
+  const { adminCounts } = useNotificationBadges();
+  const displayName = profile?.name || user?.displayName || 'Administrator';
+  const displayEmail = profile?.email || user?.email || (profile?.sifNumber ? `SIF: ${profile.sifNumber}` : 'admin@console');
+  const initial = (displayName || displayEmail || 'A').charAt(0).toUpperCase();
 
   return (
     <aside style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -72,8 +76,8 @@ const AdminSidebar = ({ onNavigate }) => {
       <div className="sidebar-profile">
         <div className="sidebar-avatar">{initial}</div>
         <div className="sidebar-profile-meta">
-          <div className="sidebar-name">{user?.displayName || 'Administrator'}</div>
-          <div className="sidebar-email">{user?.email || 'admin@console'}</div>
+          <div className="sidebar-name">{displayName}</div>
+          <div className="sidebar-email">{displayEmail}</div>
           <span className="sidebar-role-badge">System Admin</span>
         </div>
       </div>
@@ -81,15 +85,23 @@ const AdminSidebar = ({ onNavigate }) => {
       {/* Nav Menu Items */}
       <div className="sidebar-nav-scroll">
         <div className="nav-label">Academic Management</div>
-        {academicNav.map(({ to, label, Icon, end }) => (
-          <NavLink key={to} to={to} end={end} onClick={onNavigate}
-            className={({ isActive }) => ('sidebar-item ' + (isActive ? 'active' : '')).trim()}>
-            <span className="sidebar-link">
-              <span className="sidebar-icon-box" aria-hidden><Icon size={16} /></span>
-              <span>{label}</span>
-            </span>
-          </NavLink>
-        ))}
+        {academicNav.map(({ to, label, Icon, end, badgeKey }) => {
+          const count = badgeKey && adminCounts ? (adminCounts[badgeKey] || 0) : 0;
+          return (
+            <NavLink key={to} to={to} end={end} onClick={onNavigate}
+              className={({ isActive }) => ('sidebar-item ' + (isActive ? 'active' : '')).trim()}>
+              <span className="sidebar-link">
+                <span className="sidebar-icon-box" aria-hidden><Icon size={16} /></span>
+                <span className="sidebar-link-text">{label}</span>
+                {count > 0 && (
+                  <span className="sidebar-nav-badge" title={`${count} pending items`}>
+                    {count > 99 ? '99+' : count}
+                  </span>
+                )}
+              </span>
+            </NavLink>
+          );
+        })}
 
         <div className="nav-label">Academic Years</div>
         {years.map((y) => (
@@ -97,8 +109,8 @@ const AdminSidebar = ({ onNavigate }) => {
             className={({ isActive }) => ('sidebar-item ' + (isActive ? 'active' : '')).trim()}>
             <span className="sidebar-link">
               <span className="sidebar-icon-box" aria-hidden><GraduationCap size={16} /></span>
-              <span style={{ flex: 1 }}>{y}</span>
-              {selectedYear === y && <span style={{ fontSize: 10, color: 'var(--color-primary)', fontWeight: 600 }}>Active</span>}
+              <span className="sidebar-link-text">{y}</span>
+              {selectedYear === y && <span style={{ fontSize: 10, color: 'var(--color-primary)', fontWeight: 600, marginLeft: 'auto' }}>Active</span>}
             </span>
           </NavLink>
         ))}
@@ -109,7 +121,7 @@ const AdminSidebar = ({ onNavigate }) => {
             className={({ isActive }) => ('sidebar-item ' + (isActive ? 'active' : '')).trim()}>
             <span className="sidebar-link">
               <span className="sidebar-icon-box" aria-hidden><Icon size={16} /></span>
-              <span>{label}</span>
+              <span className="sidebar-link-text">{label}</span>
             </span>
           </NavLink>
         ))}

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { sendPasswordResetEmail } from 'firebase/auth';
-import { auth, db } from '../../firebase';
+import { auth, db, functions } from '../../firebase';
 import AddStudentModal from '../../components/AddStudentModal';
 import ImportStudentsModal from '../../components/ImportStudentsModal';
 import StudentTable from '../../components/StudentTable';
@@ -10,7 +11,7 @@ import { useAuth } from '../../context/AuthContext';
 import { YEARS, sortDepartmentsByName } from '../../utils/departments';
 import PageHeader from '../../components/ui/PageHeader';
 import Modal from '../../components/ui/Modal';
-import { FileSpreadsheet, Upload, UserCheck, Users, Edit3, UserPlus } from 'lucide-react';
+import { FileSpreadsheet, Upload, UserCheck, Users, Edit3, UserPlus, Trash2 } from 'lucide-react';
 import { deleteStudentCompletely } from '../../utils/studentDelete';
 import { normalizeDob, normalizeMobile, normalizeSif } from '../../utils/studentImport';
 
@@ -25,7 +26,7 @@ const StudentsPage = () => {
   const [filterYear, setFilterYear] = useState('All');
   const [filterDepartmentId, setFilterDepartmentId] = useState('All');
   const [filterSection, setFilterSection] = useState('All');
-  const [activeTab, setActiveTab] = useState('pending');
+  const [activeTab, setActiveTab] = useState('active');
   const [selected, setSelected] = useState(null);
   const [selectedStudentIds, setSelectedStudentIds] = useState([]);
 
@@ -46,6 +47,18 @@ const StudentsPage = () => {
   const [createError, setCreateError] = useState('');
   const { user: currentUser } = useAuth();
 
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+    httpsCallable(functions, 'migrateStudentProfilesToMongo')()
+      .then(({ data }) => {
+        if (data?.students) setMessage(`Migrated ${data.students} student profiles to MongoDB.`);
+      })
+      .catch((err) => {
+        console.error('Student MongoDB migration failed:', err);
+        setError(err?.message || 'Could not move existing student records to MongoDB.');
+      });
+  }, [currentUser?.uid]);
+
   const yearOptions = ['All', ...YEARS];
 
   useEffect(() => {
@@ -62,14 +75,14 @@ const StudentsPage = () => {
         const list = studentSnap.docs.map((d) => {
           const data = d.data();
           const isDeleted = data.isDeleted === true || data.status === 'deleted';
-          const isApproved = data.isApproved === true || data.approved === true;
-          const status = isDeleted ? 'deleted' : (data.status || (isApproved ? 'active' : 'pending'));
+          const status = isDeleted ? 'deleted' : 'active';
           return {
             id: d.id,
             uid: data.uid || d.id,
             ...data,
             isDeleted,
-            isApproved,
+            isApproved: !isDeleted,
+            approved: !isDeleted,
             status,
           };
         });
@@ -127,24 +140,19 @@ const StudentsPage = () => {
     [students, filterYear, filterDepartmentId, filterSection]
   );
 
-  const pendingStudents = useMemo(
-    () => filteredByYearAndDepartment.filter((s) => !s.isDeleted && (s.status === 'pending' || !s.isApproved)),
-    [filteredByYearAndDepartment]
-  );
   const activeStudents = useMemo(
-    () => filteredByYearAndDepartment.filter((s) => !s.isDeleted && s.isApproved && s.status !== 'pending'),
+    () => filteredByYearAndDepartment.filter((s) => !s.isDeleted && s.status !== 'deleted'),
     [filteredByYearAndDepartment]
   );
+
   const deletedStudents = useMemo(
     () => filteredByYearAndDepartment.filter((s) => s.isDeleted || s.status === 'deleted'),
     [filteredByYearAndDepartment]
   );
 
-  const visibleStudents = activeTab === 'pending'
-    ? pendingStudents
-    : activeTab === 'active'
-      ? activeStudents
-      : deletedStudents;
+  const visibleStudents = activeTab === 'deleted'
+    ? deletedStudents
+    : activeStudents;
 
   useEffect(() => {
     setSelectedStudentIds([]);
@@ -187,18 +195,9 @@ const StudentsPage = () => {
         throw new Error('Enter a valid date of birth.');
       }
 
-      const identifierRefs = [...new Set([sifNumber, mobileNumber].filter(Boolean))]
-        .map((identifier) => doc(db, 'studentLookup', identifier));
-      for (const lookupRef of identifierRefs) {
-        const lookupSnap = await getDoc(lookupRef);
-        if (lookupSnap.exists()) {
-          throw new Error(`The SIF/mobile number ${lookupRef.id} is already assigned to a student.`);
-        }
-      }
-
       const userRef = doc(collection(db, 'users'));
-      const status = ['active', 'blocked', 'graduated'].includes(payload.status) ? payload.status : 'active';
-      const approved = status === 'active';
+      const status = 'active';
+      const approved = true;
       const studentData = {
         uid: userRef.id,
         name: (payload.name || '').trim(),
@@ -221,34 +220,16 @@ const StudentsPage = () => {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
+
+      // Non-blocking background sync to Mongo
+      httpsCallable(functions, 'importStudentsToMongo')({ students: [studentData] }).catch(() => {});
+
       const batch = writeBatch(db);
       batch.set(userRef, studentData);
-      batch.set(doc(db, 'students data', userRef.id), studentData);
-      identifierRefs.forEach((lookupRef) => {
-        batch.set(lookupRef, {
-          studentId: userRef.id,
-          sifNumber,
-          mobileNumber,
-          dob,
-          name: studentData.name,
-          rollNumber: studentData.rollNumber,
-          role: 'student',
-          status,
-          isApproved: approved,
-          approved,
-          isDeleted: false,
-          year: studentData.year,
-          departmentId: studentData.departmentId,
-          departmentName: studentData.departmentName,
-          section: studentData.section,
-          updatedAt: serverTimestamp(),
-        });
-      });
       await batch.commit();
+
       setModalOpen(false);
-      setMessage(status === 'active'
-        ? 'Student added and can now sign in with SIF/mobile number and date of birth.'
-        : `Student added with ${status} status; sign-in is disabled until the account is active.`);
+      setMessage('Student added and can now sign in with SIF/mobile number and date of birth.');
       await load();
     } catch (err) {
       setCreateError(err?.message || 'Failed to add student.');
@@ -273,7 +254,6 @@ const StudentsPage = () => {
     };
     const approvalBatch = writeBatch(db);
     approvalBatch.update(doc(db, 'users', uid), approvalPatch);
-    approvalBatch.set(doc(db, 'students data', uid), { ...student, ...approvalPatch, uid, role: 'student' }, { merge: true });
     await approvalBatch.commit();
     updateStudentInState(uid, { isApproved: true, approved: true, status: 'active' });
     setMessage('Student approved successfully.');
@@ -283,16 +263,20 @@ const StudentsPage = () => {
     const uid = student?.uid || student?.id;
     if (!uid) return;
 
-    const ok = window.confirm(`Are you sure you want to delete student "${student.name || uid}"? This will completely delete the student from the users section and all system data.`);
+    const ok = window.confirm(`Are you sure you want to move student "${student.name || uid}" to deleted section?`);
     if (!ok) return;
 
     setError('');
     setMessage('');
     try {
-      await deleteStudentCompletely(db, student);
-      setStudents((prev) => prev.filter((s) => (s.uid || s.id) !== uid));
-      setSelected((prev) => ((prev?.uid || prev?.id) === uid ? null : prev));
-      setMessage('Student completely deleted from users section and Firestore.');
+      await updateDoc(doc(db, 'users', uid), {
+        isDeleted: true,
+        status: 'deleted',
+        deletedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      updateStudentInState(uid, { isDeleted: true, status: 'deleted' });
+      setMessage('Student moved to deleted section.');
     } catch (err) {
       console.error('Delete failed:', err);
       setError(err?.message || 'Delete failed. Please try again.');
@@ -314,7 +298,6 @@ const StudentsPage = () => {
     };
     const restoreBatch = writeBatch(db);
     restoreBatch.update(doc(db, 'users', uid), restorePatch);
-    restoreBatch.set(doc(db, 'students data', uid), { ...student, ...restorePatch, uid, role: 'student' }, { merge: true });
     await restoreBatch.commit();
     updateStudentInState(uid, { isDeleted: false, status: 'active', isApproved: true, approved: true });
     setMessage('Student restored successfully.');
@@ -324,7 +307,7 @@ const StudentsPage = () => {
     const uid = student?.uid || student?.id;
     if (!uid) return;
 
-    const ok = window.confirm('This will permanently delete the student data from Firestore. Continue?');
+    const ok = window.confirm(`Permanently delete student "${student.name || uid}" and all their records from Firestore? This cannot be undone.`);
     if (!ok) return;
 
     setError('');
@@ -337,6 +320,30 @@ const StudentsPage = () => {
     } catch (err) {
       console.error('Permanent delete failed:', err);
       setError(err?.message || 'Permanent delete failed. Please try again.');
+    }
+  };
+
+  const handleDeleteAllDeleted = async () => {
+    if (deletedStudents.length === 0) return;
+    const ok = window.confirm(`Are you sure you want to permanently delete ALL ${deletedStudents.length} student(s) in the deleted section? All their profile data, test results, and submissions will be permanently wiped.`);
+    if (!ok) return;
+
+    setLoading(true);
+    setError('');
+    setMessage('');
+    try {
+      for (const student of deletedStudents) {
+        await deleteStudentCompletely(db, student);
+      }
+      const deletedIds = new Set(deletedStudents.map(s => s.uid || s.id));
+      setStudents((prev) => prev.filter(s => !deletedIds.has(s.uid || s.id)));
+      setSelected(null);
+      setMessage(`Successfully deleted all ${deletedStudents.length} student(s) permanently.`);
+    } catch (err) {
+      console.error('Delete all failed:', err);
+      setError(err?.message || 'Failed to permanently delete some students.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -377,13 +384,16 @@ const StudentsPage = () => {
       return;
     }
     if (!selectedDepartment) {
-      setError('Select a valid department.');
+      setError('Select a valid department for this student.');
       return;
     }
 
-    const isYearChanged = editTarget.year !== editYear;
-    if (isYearChanged) {
-      const ok = window.confirm(`Changing the year will permanently delete all previous results, reports, notes, and submissions for ${cleanName}. Continue?`);
+    const previousYear = editTarget?.year;
+    const hasYearChanged = previousYear && previousYear !== editYear;
+    if (hasYearChanged) {
+      const ok = window.confirm(
+        `Changing the student's year from ${previousYear} to ${editYear} will reset and clear their previous test scores, reports, notes, and task submissions for previous year. Continue?`
+      );
       if (!ok) return;
     }
 
@@ -391,17 +401,21 @@ const StudentsPage = () => {
     setError('');
     setMessage('');
     try {
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'users', uid), {
+      const userRef = doc(db, 'users', uid);
+      const patch = {
         name: cleanName,
         year: editYear,
         departmentId: selectedDepartment.id,
         departmentName: selectedDepartment.name,
+        class: selectedDepartment.name,
         updatedAt: serverTimestamp(),
-      });
+      };
 
-      if (isYearChanged) {
-        const collectionsToClean = ['results', 'reports', 'notes', 'submissions', 'taskSubmissions'];
+      const batch = writeBatch(db);
+      batch.update(userRef, patch);
+
+      if (hasYearChanged) {
+        const collectionsToClean = ['results', 'reports', 'notes', 'submissions', 'taskSubmissions', 'task_submissions'];
         for (const colName of collectionsToClean) {
           const snap = await getDocs(query(collection(db, colName), where('studentId', '==', uid)));
           snap.forEach((documentRef) => {
@@ -412,16 +426,13 @@ const StudentsPage = () => {
 
       await batch.commit();
 
-      updateStudentInState(uid, {
-        name: cleanName,
-        year: editYear,
-        departmentId: selectedDepartment.id,
-        departmentName: selectedDepartment.name,
-      });
-      setMessage('Student details updated successfully.');
+      updateStudentInState(uid, patch);
       closeEditModal();
+      setMessage(hasYearChanged
+        ? 'Student profile updated and previous year progress records were cleaned.'
+        : 'Student profile updated successfully.');
     } catch (err) {
-      setError(err?.message || 'Failed to update student.');
+      setError(err?.message || 'Failed to update student profile.');
     } finally {
       setSavingEdit(false);
     }
@@ -471,7 +482,7 @@ const StudentsPage = () => {
         });
         
         if (student.year !== bulkEditYear) {
-          const collectionsToClean = ['results', 'reports', 'notes', 'submissions', 'taskSubmissions'];
+          const collectionsToClean = ['results', 'reports', 'notes', 'submissions', 'taskSubmissions', 'task_submissions'];
           for (const colName of collectionsToClean) {
             const snap = await getDocs(query(collection(db, colName), where('studentId', '==', uid)));
             snap.forEach((documentRef) => {
@@ -521,7 +532,7 @@ const StudentsPage = () => {
         <PageHeader
           eyebrow="Admin / Students"
           title="Students Management"
-          subtitle="Manage student accounts, approve registrations, and import student data."
+          subtitle="Manage student accounts, organize by academic year & class, and import data."
         />
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <select className="input" style={{ width: 'auto' }} value={filterYear} onChange={(e) => {
@@ -561,18 +572,26 @@ const StudentsPage = () => {
       </div>
 
       {/* Tab Bar */}
-      <div className="card" style={{ padding: '12px 16px' }}>
+      <div className="card" style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
         <div className="tab-row">
-          <button className={'tab-btn ' + (activeTab === 'pending' ? 'active' : '')} onClick={() => setActiveTab('pending')}>
-            Pending ({pendingStudents.length})
-          </button>
           <button className={'tab-btn ' + (activeTab === 'active' ? 'active' : '')} onClick={() => setActiveTab('active')}>
-            Active ({activeStudents.length})
+            Active Students ({activeStudents.length})
           </button>
           <button className={'tab-btn ' + (activeTab === 'deleted' ? 'active' : '')} onClick={() => setActiveTab('deleted')}>
-            Deleted ({deletedStudents.length})
+            Deleted Students ({deletedStudents.length})
           </button>
         </div>
+
+        {activeTab === 'deleted' && deletedStudents.length > 0 && (
+          <button
+            className="btn btn-secondary"
+            style={{ background: '#ef4444', color: '#fff', border: 'none', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+            onClick={handleDeleteAllDeleted}
+          >
+            <Trash2 size={14} />
+            <span>Delete All ({deletedStudents.length})</span>
+          </button>
+        )}
       </div>
 
       {message && <div className="alert success">{message}</div>}
@@ -586,47 +605,26 @@ const StudentsPage = () => {
             <div className="card" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '12px 16px', background: 'var(--color-primary-light)', border: '1px solid var(--color-border-focus)' }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>{selectedStudentIds.length} selected</span>
               
-              {activeTab === 'pending' && (
-                <button className="btn btn-primary" onClick={async () => {
-                  if(!window.confirm(`Approve ${selectedStudentIds.length} students?`)) return;
-                  setLoading(true);
-                  try {
-                      const batch = writeBatch(db);
-                      selectedStudentIds.forEach(uid => {
-                        batch.update(doc(db, 'users', uid), {
-                          isApproved: true, approved: true, status: 'active',
-                          approvedAt: serverTimestamp(), approvedBy: currentUser?.uid || null, updatedAt: serverTimestamp()
-                        });
-                      });
-                      await batch.commit();
-                      setStudents(prev => prev.map(s => selectedStudentIds.includes(s.uid || s.id) ? { ...s, isApproved: true, approved: true, status: 'active' } : s));
-                      setSelectedStudentIds([]);
-                      setMessage(`${selectedStudentIds.length} students approved.`);
-                  } catch(err) { setError(err.message); }
-                  setLoading(false);
-                }}>Approve Selected</button>
-              )}
-              
               {activeTab !== 'deleted' && (
                 <>
                   <button className="btn btn-primary" style={{ background: 'linear-gradient(120deg,#6366f1,#8b5cf6)', border: 'none' }} onClick={() => setBulkEditOpen(true)}>Edit Selected</button>
                   <button className="btn btn-secondary" style={{ background: '#ef4444', color: '#fff', border: 'none' }} onClick={async () => {
-                  if(!window.confirm(`Delete ${selectedStudentIds.length} students?`)) return;
-                  setLoading(true);
-                  try {
-                      const batch = writeBatch(db);
-                      selectedStudentIds.forEach(uid => {
-                        batch.update(doc(db, 'users', uid), {
-                          isDeleted: true, status: 'deleted', deletedAt: serverTimestamp(), updatedAt: serverTimestamp()
+                    if(!window.confirm(`Move ${selectedStudentIds.length} students to deleted section?`)) return;
+                    setLoading(true);
+                    try {
+                        const batch = writeBatch(db);
+                        selectedStudentIds.forEach(uid => {
+                          batch.update(doc(db, 'users', uid), {
+                            isDeleted: true, status: 'deleted', deletedAt: serverTimestamp(), updatedAt: serverTimestamp()
+                          });
                         });
-                      });
-                      await batch.commit();
-                      setStudents(prev => prev.map(s => selectedStudentIds.includes(s.uid || s.id) ? { ...s, isDeleted: true, status: 'deleted' } : s));
-                      setSelectedStudentIds([]);
-                      setMessage(`${selectedStudentIds.length} students deleted.`);
-                  } catch(err) { setError(err.message); }
-                  setLoading(false);
-                }}>Delete Selected</button>
+                        await batch.commit();
+                        setStudents(prev => prev.map(s => selectedStudentIds.includes(s.uid || s.id) ? { ...s, isDeleted: true, status: 'deleted' } : s));
+                        setSelectedStudentIds([]);
+                        setMessage(`${selectedStudentIds.length} students moved to deleted section.`);
+                    } catch(err) { setError(err.message); }
+                    setLoading(false);
+                  }}>Delete Selected</button>
                 </>
               )}
               
@@ -649,6 +647,20 @@ const StudentsPage = () => {
                     } catch(err) { setError(err.message); }
                     setLoading(false);
                   }}>Restore Selected</button>
+                  <button className="btn btn-secondary" style={{ background: '#ef4444', color: '#fff', border: 'none' }} onClick={async () => {
+                    if(!window.confirm(`Permanently delete ${selectedStudentIds.length} selected students? This cannot be undone.`)) return;
+                    setLoading(true);
+                    try {
+                      for (const uid of selectedStudentIds) {
+                        const s = students.find(x => (x.uid || x.id) === uid);
+                        if (s) await deleteStudentCompletely(db, s);
+                      }
+                      setStudents(prev => prev.filter(s => !selectedStudentIds.includes(s.uid || s.id)));
+                      setSelectedStudentIds([]);
+                      setMessage(`${selectedStudentIds.length} students permanently deleted.`);
+                    } catch(err) { setError(err.message); }
+                    setLoading(false);
+                  }}>Permanently Delete Selected</button>
                 </>
               )}
             </div>
@@ -681,13 +693,9 @@ const StudentsPage = () => {
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
             <span className="badge neutral">Department: {selected.departmentName || '-'}</span>
-            <span className="badge neutral">Status: {selected.status || 'pending'}</span>
+            <span className="badge neutral">Status: {selected.status || 'active'}</span>
             <span className="badge neutral">Role: {selected.role || 'student'}</span>
-            {(selected.isApproved || selected.approved) ? (
-              <span className="badge success">Approved</span>
-            ) : (
-              <span className="badge warn">Pending Approval</span>
-            )}
+            <span className="badge success">Active</span>
           </div>
           <div style={{ marginTop: 12 }}>
             <button className="btn btn-secondary" onClick={() => setSelected(null)}>Close</button>

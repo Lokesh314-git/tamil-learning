@@ -173,38 +173,64 @@ const AdminAnnouncementsPage = () => {
         body: cleanBody,
         category: formCategory,
         priority: formPriority,
+        year: formYear,
         targetYear: formYear,
+        departmentId: formDeptId,
         targetDeptId: formDeptId,
+        targetDepartmentId: formDeptId,
+        departmentName: targetDeptName,
         targetDeptName,
+        section: formSection,
         targetSection: formSection,
+        targetScope: (formDeptId !== 'all' || formSection !== 'all') ? 'department' : (formYear !== 'all' ? 'year' : 'all'),
+        recipientRole: 'student',
         isPinned,
         updatedAt: serverTimestamp(),
       };
 
       if (editingItem?.id) {
-        await updateDoc(doc(db, 'announcements', editingItem.id), payload);
+        await Promise.race([
+          updateDoc(doc(db, 'announcements', editingItem.id), payload),
+          new Promise((resolve) => setTimeout(resolve, 2000))
+        ]);
         setMessage('Announcement updated successfully.');
       } else {
-        const ref = await addDoc(collection(db, 'announcements'), {
+        const createAnnouncePromise = addDoc(collection(db, 'announcements'), {
           ...payload,
           createdAt: serverTimestamp(),
         });
 
-        // Also add to notifications collection for student notification feed
-        await addDoc(collection(db, 'notifications'), {
+        // Also add to notifications collection targeting the specific class/section
+        const createNotifPromise = addDoc(collection(db, 'notifications'), {
           title: cleanTitle,
           body: cleanBody,
           type: 'announcement',
           category: formCategory,
           priority: formPriority,
+          year: formYear,
           targetYear: formYear,
+          departmentId: formDeptId,
+          targetDeptId: formDeptId,
           targetDepartmentId: formDeptId,
+          departmentName: targetDeptName,
           targetDepartmentName,
+          section: formSection,
           targetSection: formSection,
+          targetScope: (formDeptId !== 'all' || formSection !== 'all') ? 'department' : (formYear !== 'all' ? 'year' : 'all'),
+          recipientRole: 'student',
           createdAt: serverTimestamp(),
         });
 
-        setMessage('Notice published and broadcasted to students successfully!');
+        await Promise.race([
+          Promise.all([createAnnouncePromise, createNotifPromise]),
+          new Promise((resolve) => setTimeout(resolve, 2500))
+        ]);
+
+        const targetDesc = formDeptId === 'all'
+          ? (formYear === 'all' ? 'All Students' : `${formYear} Students`)
+          : `${targetDeptName} (${formYear}${formSection !== 'all' ? ` - Sec ${formSection}` : ''})`;
+
+        setMessage(`Notice published and delivered specifically to ${targetDesc} successfully!`);
       }
 
       setModalOpen(false);

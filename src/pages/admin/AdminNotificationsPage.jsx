@@ -94,29 +94,74 @@ const AdminNotificationsPage = () => {
       return;
     }
 
+    if (targetScope === 'individual' && !targetStudentId) {
+      setError('Please select a student from the list.');
+      return;
+    }
+
     setSending(true);
     setError('');
     setMessage('');
 
     try {
       const selectedDept = departments.find((d) => d.id === targetDeptId);
-      const targetDeptName = targetDeptId === 'all' ? 'All Classes' : (selectedDept?.name || 'General');
+      const targetDepartmentName = targetDeptId === 'all' ? 'All Classes' : (selectedDept?.name || 'General');
 
-      await addDoc(collection(db, 'notifications'), {
+      const selectedStudent = students.find((s) => s.id === targetStudentId);
+      const studentName = selectedStudent?.name || '';
+
+      const effectiveYear = targetScope === 'all'
+        ? 'all'
+        : (targetScope === 'individual'
+            ? (selectedStudent?.year || 'all')
+            : targetYear);
+
+      const effectiveDeptId = targetScope === 'class'
+        ? targetDeptId
+        : (targetScope === 'individual' ? (selectedStudent?.departmentId || 'all') : 'all');
+
+      const effectiveSection = targetScope === 'class'
+        ? targetSection
+        : (targetScope === 'individual' ? (selectedStudent?.section || 'all') : 'all');
+
+      const payload = {
         title: cleanTitle,
         body: cleanBody,
         priority,
         type: 'direct_broadcast',
         targetScope,
-        targetYear: targetScope === 'all' ? 'all' : targetYear,
-        targetDepartmentId: targetDeptId,
+        year: effectiveYear,
+        targetYear: effectiveYear,
+        departmentId: effectiveDeptId,
+        targetDeptId: effectiveDeptId,
+        targetDepartmentId: effectiveDeptId,
+        departmentName: targetDepartmentName,
         targetDepartmentName,
-        targetSection,
+        section: effectiveSection,
+        targetSection: effectiveSection,
         targetStudentId: targetScope === 'individual' ? targetStudentId : null,
+        targetUserId: targetScope === 'individual' ? targetStudentId : 'all',
+        studentId: targetScope === 'individual' ? targetStudentId : 'all',
+        recipientRole: 'student',
+        read: false,
+        isRead: false,
         createdAt: serverTimestamp(),
-      });
+      };
 
-      setMessage('Notification sent and dispatched via Firebase Cloud Messaging (FCM) successfully!');
+      await Promise.race([
+        addDoc(collection(db, 'notifications'), payload),
+        new Promise((resolve) => setTimeout(resolve, 2500))
+      ]);
+
+      const targetDesc = targetScope === 'all'
+        ? 'All Students'
+        : (targetScope === 'year'
+            ? `${targetYear} Students`
+            : (targetScope === 'class'
+                ? `${targetDepartmentName} (${targetSection !== 'all' ? `Sec ${targetSection}` : 'All Sections'})`
+                : `${studentName || 'Student'}`));
+
+      setMessage(`Notification dispatched to ${targetDesc} successfully!`);
       setTitle('');
       setBody('');
     } catch (err) {

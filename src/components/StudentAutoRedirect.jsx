@@ -10,7 +10,11 @@ const StudentAutoRedirect = () => {
 
   useEffect(() => {
     if (loading) return;
-    if (!profile || profile.role !== 'student') return;
+    if (!profile) return;
+    if (profile.role === 'admin') {
+      navigate('/admin/dashboard', { replace: true });
+      return;
+    }
     const targetYear = profile.year;
     if (!targetYear) return;
 
@@ -20,7 +24,9 @@ const StudentAutoRedirect = () => {
   }, [profile, loading, navigate, location.pathname]);
 
   if (loading) return <Loader />;
-  if (!profile || profile.role !== 'student' || !profile.year) return <Navigate to="/auth" replace />;
+  if (!profile) return <Navigate to="/auth" replace />;
+  if (profile.role === 'admin') return <Navigate to="/admin/dashboard" replace />;
+  if (!profile.year) return <Navigate to="/auth" replace />;
   return <Loader />;
 };
 
