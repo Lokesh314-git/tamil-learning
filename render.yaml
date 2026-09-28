@@ -2,6 +2,7 @@ services:
   - type: web
     name: tamil-learning
     runtime: static
+    autoDeployTrigger: commit
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
     routes:
