@@ -3,8 +3,8 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  // GitHub Pages serves this project from its repository subpath.
-  base: '/tamil-learning/',
+  // Use root '/' by default for Render / custom domains, or VITE_BASE_PATH if specified
+  base: process.env.VITE_BASE_PATH || '/',
   plugins: [
     react(),
     VitePWA({
