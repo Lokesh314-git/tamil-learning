@@ -1,6 +1,5 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import logoImg from '../../assets/logo.png';
 
 const LoginSelection = () => {
   return (
@@ -8,7 +7,7 @@ const LoginSelection = () => {
       <div className="auth-card">
         <div className="auth-logo">
           <div className="auth-logo-mark" style={{ background: '#fff', padding: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <img src={logoImg} alt="Tamil Learning Logo" style={{ width: 34, height: 34, objectFit: 'contain' }} />
+            <img src="/logo.png" alt="Tamil Learning Logo" style={{ width: 34, height: 34, objectFit: 'contain' }} />
           </div>
           <div>
             <div className="auth-logo-text">Tamil Learning</div>

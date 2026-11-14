@@ -12,7 +12,7 @@ import { useAuth } from '../../context/AuthContext';
 import { YEARS, sortDepartmentsByName } from '../../utils/departments';
 import PageHeader from '../../components/ui/PageHeader';
 import Modal from '../../components/ui/Modal';
-import { FileSpreadsheet, Upload, UserCheck, Users, Edit3, UserPlus, Trash2, Smartphone, Database } from 'lucide-react';
+import { FileSpreadsheet, Upload, UserCheck, Users, Edit3, UserPlus, Trash2, Smartphone } from 'lucide-react';
 import { deleteStudentCompletely } from '../../utils/studentDelete';
 import { normalizeDob, normalizeMobile, normalizeSif } from '../../utils/studentImport';
 
@@ -48,28 +48,18 @@ const StudentsPage = () => {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const { user: currentUser } = useAuth();
-  const [migrating, setMigrating] = useState(false);
 
-  const handleManualMongoSync = async () => {
-    if (!currentUser?.uid || migrating) return;
-    setMigrating(true);
-    setMessage('');
-    setError('');
-    try {
-      const migrateFn = httpsCallable(functions, 'migrateStudentProfilesToMongo');
-      const { data } = await migrateFn();
-      if (data?.skipped) {
-        setMessage('MongoDB is already up to date with Firestore student records.');
-      } else {
-        setMessage(`Successfully synced ${data?.students || 0} student profiles to MongoDB.`);
-      }
-    } catch (err) {
-      console.warn('Student MongoDB sync notice:', err);
-      setError(err?.message || 'Could not sync student records to MongoDB. Please verify MongoDB connection.');
-    } finally {
-      setMigrating(false);
-    }
-  };
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+    httpsCallable(functions, 'migrateStudentProfilesToMongo')()
+      .then(({ data }) => {
+        if (data?.students) setMessage(`Migrated ${data.students} student profiles to MongoDB.`);
+      })
+      .catch((err) => {
+        console.error('Student MongoDB migration failed:', err);
+        setError(err?.message || 'Could not move existing student records to MongoDB.');
+      });
+  }, [currentUser?.uid]);
 
   const yearOptions = ['All', ...YEARS];
 
@@ -567,14 +557,6 @@ const StudentsPage = () => {
           </select>
           <button className="btn btn-secondary" onClick={() => setAuditModalOpen(true)}>
             <Smartphone size={14} /> Mobile Audit
-          </button>
-          <button
-            className="btn btn-secondary"
-            onClick={handleManualMongoSync}
-            disabled={migrating}
-            title="Sync all Firestore student profiles to MongoDB"
-          >
-            <Database size={14} /> {migrating ? 'Syncing...' : 'Sync MongoDB'}
           </button>
           <button className="btn btn-primary" onClick={() => setModalOpen(true)}>+ Add Student</button>
         </div>
