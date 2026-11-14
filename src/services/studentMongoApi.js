@@ -147,13 +147,72 @@ export const studentMongoApi = {
         throw err;
       }
 
-      if (code === 'unavailable' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-        const err = new Error('Unable to connect to the authentication server. Please check your internet connection.');
-        err.code = 'unavailable';
-        throw err;
-      }
+      if (code === 'internal' || code === 'unavailable' || !navigator.onLine) {
+        // Fallback: If backend Cloud Function is not yet deployed on this Firebase project (404/internal),
+        // or during service interruption, execute Direct Firestore Verification.
+        try {
+          const usersRef = firestoreCollection(db, 'users');
+          const [mobileSnap, phoneSnap] = await Promise.all([
+            firestoreGetDocs(firestoreQuery(usersRef, firestoreWhere('role', '==', 'student'), firestoreWhere('mobileNumber', '==', cleanMobile))),
+            firestoreGetDocs(firestoreQuery(usersRef, firestoreWhere('role', '==', 'student'), firestoreWhere('phone', '==', cleanMobile)))
+          ]);
 
-      if (code === 'internal') {
+          const candidateMap = new Map();
+          [...mobileSnap.docs, ...phoneSnap.docs].forEach((d) => candidateMap.set(d.id, { id: d.id, uid: d.id, ...d.data() }));
+          const candidates = Array.from(candidateMap.values()).filter(
+            (s) => s.isDeleted !== true && s.status !== 'deleted'
+          );
+
+          if (candidates.length > 1) {
+            const dupErr = new Error('Multiple student accounts are associated with this mobile number. Please contact your college administrator for correction.');
+            dupErr.code = 'failed-precondition';
+            throw dupErr;
+          }
+
+          if (candidates.length === 0) {
+            const notFoundErr = new Error('Invalid registered mobile number or date of birth.');
+            notFoundErr.code = 'unauthenticated';
+            throw notFoundErr;
+          }
+
+          const student = candidates[0];
+
+          if (['blocked', 'inactive', 'rejected'].includes(student.status)) {
+            const blockedErr = new Error('Your student account is blocked or inactive. Please contact your department administrator.');
+            blockedErr.code = 'permission-denied';
+            throw blockedErr;
+          }
+
+          const storedDob = normalizeDob(student.dob);
+          if (!storedDob || storedDob !== cleanDob) {
+            const dobErr = new Error('Invalid registered mobile number or date of birth.');
+            dobErr.code = 'unauthenticated';
+            throw dobErr;
+          }
+
+          const studentId = student.id || student.uid;
+          const session = {
+            studentId,
+            token: `session_${studentId}`,
+            authenticated: true,
+            student: { ...student, uid: studentId, id: studentId }
+          };
+          localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+          localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
+          return { ...student, uid: studentId, id: studentId };
+        } catch (fallbackErr) {
+          if (['failed-precondition', 'unauthenticated', 'permission-denied'].includes(fallbackErr.code)) {
+            throw fallbackErr;
+          }
+          console.warn('[studentMongoApi] Direct verification notice:', fallbackErr.message);
+        }
+
+        if (!navigator.onLine) {
+          const err = new Error('Unable to connect to the authentication server. Please check your internet connection.');
+          err.code = 'unavailable';
+          throw err;
+        }
+
         const err = new Error('Authentication service encountered an unexpected error. Please try again shortly.');
         err.code = 'internal';
         throw err;
