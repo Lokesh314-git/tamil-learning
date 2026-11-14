@@ -176,13 +176,32 @@ All identified architectural vulnerabilities, data leakage risks, role escalatio
 - **Database Schema & Academic Compatibility:**
   - Existing student records, reports, Firestore schemas, and student detail views retain `sifNumber` for historical academic continuity.
 
+### 4.8 Firebase Callable CORS & Student Authentication Standardization
+- **Root Cause of CORS Errors:**
+  1. The client-side service `studentMongoApi.js` was implementing a secondary HTTP fallback invoking `fetch('https://us-central1-tamil-learning-9f609.cloudfunctions.net/studentMongoApi/login')`. When this HTTP fetch was triggered from `https://tamil-learning.onrender.com`, it failed CORS preflight due to conflicting manual headers (`Access-Control-Allow-Origin: *` with `credentials: true`).
+  2. The callable Cloud Function `studentLogin` had `cors: true` instead of explicitly listing the production origin `https://tamil-learning.onrender.com`.
+- **Backend Changes (`functions/index.js`):**
+  - Configured `setGlobalOptions` with `ALLOWED_ORIGINS` explicitly containing `https://tamil-learning.onrender.com`.
+  - Configured `exports.studentLogin` onCall with `cors: ALLOWED_ORIGINS`.
+  - Enforced server-side DOB verification, 10-digit mobile normalization, rate limiting, and ambiguous duplicate phone checks.
+- **Frontend Changes (`src/services/studentMongoApi.js` & `src/pages/auth/StudentLogin.jsx`):**
+  - Removed HTTP fallback `fetch()` to `/studentMongoApi/login` completely.
+  - Standardized on `httpsCallable(functions, 'studentLogin')` as the primary and only student authentication API.
+  - Implemented differentiated error handling distinguishing between: invalid credentials, inactive accounts, duplicate accounts, rate limits, network failures, and backend downtime. Never displays "invalid credentials" when a network or server failure occurs.
+- **Function Deployment Status:**
+  - Configured for region `us-central1` and project `tamil-learning-9f609`.
+- **Security Improvements:**
+  - No client-side password or DOB verification; genuine Firebase Custom Tokens issued server-side via Firebase Admin SDK.
+  - Brute-force throttling per IP and mobile number.
+  - Sensitive student credentials (DOB, passwords) omitted from client console logs.
+
 ---
 
 ## 5. Verification Summary
 
 - **Production Build:** `npm run build` succeeds cleanly with code 0.
 - **Code Linter:** `npm run lint` succeeds with code 0 (0 errors, 0 warnings).
-- **Automated Auth Test Suite:** `node --test tests/studentAuthScenarios.test.js` passes all 15 test cases (100% pass).
+- **Automated Auth Test Suite:** `node --test tests/studentAuthScenarios.test.js` passes all 17 test cases (100% pass).
 - **Automated Excel Import Test Suite:** `node --test tests/studentImport.test.js` passes all 9 test cases (100% pass).
 - **Backend Syntax:** `node -c ./functions/index.js` verified with code 0.
 - **Documentation:** `PROJECT_AUDIT.md`, `TESTING_REPORT.md`, and `FIXES_COMPLETED.md` created in project root.

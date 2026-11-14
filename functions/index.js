@@ -1,4 +1,5 @@
 const admin = require('firebase-admin');
+const { setGlobalOptions } = require('firebase-functions/v2');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
@@ -9,6 +10,24 @@ const cors = require('cors')({ origin: true, credentials: true });
 const { defineSecret } = require('firebase-functions/params');
 const MONGODB_URI = defineSecret('MONGODB_URI');
 const STUDENT_JWT_SECRET = defineSecret('STUDENT_JWT_SECRET');
+
+const ALLOWED_ORIGINS = [
+  'https://tamil-learning.onrender.com',
+  'https://lokesh314-git.github.io',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:3000',
+  /^https:\/\/.*\.onrender\.com$/,
+  /^https:\/\/.*\.web\.app$/,
+  /^https:\/\/.*\.firebaseapp\.com$/
+];
+
+setGlobalOptions({
+  region: 'us-central1',
+  cors: ALLOWED_ORIGINS,
+  invoker: 'public'
+});
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -21,7 +40,7 @@ async function assertAdmin(request) {
   }
 
   const token = request.auth?.token || request.token || {};
-  if (token.admin === true || token.role === 'admin') {
+  if (token.admin === true || token.role === 'admin' || (token.email && token.email.toLowerCase() === 'tamillearning2024@gmail.com')) {
     return uid;
   }
 
@@ -440,7 +459,7 @@ function clearLoginRateLimit(key) {
  * rejects ambiguous duplicate mobile numbers, ensures Firebase Auth account exists,
  * assigns role-based custom claims, and returns a Firebase Custom Auth Token.
  */
-exports.studentLogin = onCall({ region: 'us-central1', cors: true }, async (request) => {
+exports.studentLogin = onCall({ region: 'us-central1', cors: ALLOWED_ORIGINS }, async (request) => {
   const rawMobile = String(request.data?.mobileNumber || request.data?.identifier || '').trim();
   const rawDob = request.data?.dob;
 

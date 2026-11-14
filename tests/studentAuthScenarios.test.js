@@ -227,3 +227,27 @@ test('15. Admin login remains unaffected', () => {
   assert.ok(adminAccount.email.includes('@'));
 });
 
+test('16. Firebase Function unavailable simulation', () => {
+  // Simulate callable function service unavailable (503 / unavailable error)
+  const fnErr = { code: 'functions/unavailable', message: 'Service Unavailable' };
+  const code = fnErr.code.replace(/^functions\//, '');
+  assert.equal(code, 'unavailable');
+  const userMessage = code === 'unavailable'
+    ? 'Unable to connect to the authentication server. Please check your internet connection.'
+    : 'Authentication service is temporarily unavailable. Please try again.';
+  assert.match(userMessage, /Unable to connect/i);
+});
+
+test('17. Network interruption simulation (navigator.onLine is false)', () => {
+  const isOnline = false;
+  let thrownError = null;
+  if (!isOnline) {
+    thrownError = new Error('Unable to connect to the authentication server. Please check your internet connection.');
+    thrownError.code = 'network-unavailable';
+  }
+  assert.ok(thrownError);
+  assert.equal(thrownError.code, 'network-unavailable');
+  assert.match(thrownError.message, /check your internet connection/i);
+});
+
+

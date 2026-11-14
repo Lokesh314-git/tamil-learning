@@ -86,10 +86,17 @@ export const studentMongoApi = {
       throw error;
     }
 
-    // 1. Primary: Secure Cloud Function verification & custom token issuance
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const error = new Error('Unable to connect to the authentication server. Please check your internet connection.');
+      error.code = 'network-unavailable';
+      throw error;
+    }
+
+    // Standardized Primary Authentication: Firebase Callable Function exclusively (no HTTP fallback)
     try {
       const studentLoginCallable = httpsCallable(functions, 'studentLogin');
       const response = await studentLoginCallable({ mobileNumber: cleanMobile, dob: cleanDob });
+
       if (response?.data?.student) {
         const student = response.data.student;
         const customToken = response.data.customToken;
@@ -104,49 +111,59 @@ export const studentMongoApi = {
         localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
         return { ...student, customToken };
       }
+      throw new Error('Authentication failed. No student profile was returned.');
     } catch (callableErr) {
-      console.warn('[studentMongoApi] Callable studentLogin attempt notice:', callableErr.message);
-      if (callableErr.code === 'unauthenticated' || callableErr.code === 'permission-denied' || callableErr.code === 'resource-exhausted') {
-        const err = new Error(callableErr.message || 'Invalid mobile number or date of birth.');
-        err.status = 401;
+      console.warn('[studentMongoApi] Callable studentLogin error:', callableErr.code, callableErr.message);
+      const code = String(callableErr.code || '').replace(/^functions\//, '');
+      const rawMsg = callableErr.message || '';
+
+      if (code === 'unauthenticated') {
+        const err = new Error('Invalid registered mobile number or date of birth.');
+        err.code = 'unauthenticated';
         throw err;
       }
-    }
 
-    // 2. Secondary fallback: Cloud Function HTTP endpoint
-    try {
-      const res = await fetch('https://us-central1-tamil-learning-9f609.cloudfunctions.net/studentMongoApi/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mobileNumber: cleanMobile, dob: cleanDob })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.student) {
-          const student = { ...data.student, id: data.studentId || data.student?.uid, uid: data.studentId || data.student?.uid };
-          const session = {
-            studentId: student.uid,
-            token: data.customToken || data.token,
-            customToken: data.customToken,
-            authenticated: true,
-            student,
-          };
-          localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-          localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
-          return { ...student, customToken: data.customToken };
-        }
-      } else if (res.status === 401 || res.status === 429) {
-        const errData = await res.json().catch(() => ({}));
-        const err = new Error(errData.error || 'Invalid mobile number or date of birth.');
-        err.status = res.status;
+      if (code === 'permission-denied') {
+        const err = new Error(rawMsg || 'Your student account is blocked or inactive. Please contact your department administrator.');
+        err.code = 'permission-denied';
         throw err;
       }
-    } catch (fetchErr) {
-      if (fetchErr.status === 401 || fetchErr.status === 429) throw fetchErr;
-      console.warn('[studentMongoApi] HTTP login fallback notice:', fetchErr.message);
-    }
 
-    throw new Error('Invalid mobile number or date of birth.');
+      if (code === 'failed-precondition') {
+        const err = new Error(rawMsg || 'Multiple student accounts are associated with this mobile number. Please contact your college administrator for correction.');
+        err.code = 'failed-precondition';
+        throw err;
+      }
+
+      if (code === 'resource-exhausted') {
+        const err = new Error('Too many sign-in attempts. Please try again in 15 minutes.');
+        err.code = 'resource-exhausted';
+        throw err;
+      }
+
+      if (code === 'invalid-argument') {
+        const err = new Error(rawMsg || 'Please enter a valid 10-digit registered mobile number and date of birth.');
+        err.code = 'invalid-argument';
+        throw err;
+      }
+
+      if (code === 'unavailable' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+        const err = new Error('Unable to connect to the authentication server. Please check your internet connection.');
+        err.code = 'unavailable';
+        throw err;
+      }
+
+      if (code === 'internal') {
+        const err = new Error('Authentication service encountered an unexpected error. Please try again shortly.');
+        err.code = 'internal';
+        throw err;
+      }
+
+      // Preserve descriptive error message or generic server failure (never falsify credentials)
+      const err = new Error(rawMsg || 'Authentication service is temporarily unavailable. Please try again.');
+      err.code = code || 'unknown';
+      throw err;
+    }
   },
 
   async me() {
