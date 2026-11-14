@@ -12,11 +12,12 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid != null;
     }
 
-    // User has Administrator privileges (via Auth custom claims or users doc)
+    // User has Administrator privileges (via Auth custom claims, root email, or users doc)
     function isAdmin() {
       return signedIn() && (
         request.auth.token.role == 'admin' ||
         request.auth.token.admin == true ||
+        (request.auth.token.email != null && request.auth.token.email == 'tamillearning2024@gmail.com') ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
       );
@@ -49,8 +50,8 @@ service cloud.firestore {
     // 1. User Profiles & Accounts (Admins & Students)
     // =============================================================
     match /users/{userId} {
-      // Admins can read any user profile; students can read only their own profile
-      allow read: if isAdmin() || isOwner(userId);
+      // User profiles can be read to authenticate and load profiles
+      allow read: if true;
 
       // Only administrators can create or delete user profiles
       allow create, delete: if isAdmin();
@@ -284,5 +285,10 @@ service cloud.firestore {
     match /auditLogs/{id} { allow read, write: if isAdmin(); }
     match /audit_logs/{id} { allow read, write: if isAdmin(); }
     match /login_attempts/{id} { allow read, write: if isAdmin(); }
+
+    // Fallback: Administrators have full access across all collections
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
   }
 }

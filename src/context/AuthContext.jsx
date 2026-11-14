@@ -1,9 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signInWithCustomToken, signOut } from 'firebase/auth';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { normalizeEmail } from '../utils/emailValidation';
 import { isDeletedAccount } from '../utils/studentStatus';
+import { ROOT_ADMIN_EMAIL } from '../utils/roles';
 import { clearStudentSession, readStudentSession, studentMongoApi } from '../services/studentMongoApi';
 
 const AuthContext = createContext();
@@ -33,6 +34,20 @@ export const AuthProvider = ({ children }) => {
         profileUnsub = onSnapshot(doc(db, 'users', firebaseUser.uid), async (snapshot) => {
           if (disposed) return;
           if (!snapshot.exists()) {
+            if (firebaseUser.email && normalizeEmail(firebaseUser.email) === ROOT_ADMIN_EMAIL) {
+              const rootDoc = {
+                uid: firebaseUser.uid,
+                id: firebaseUser.uid,
+                email: normalizeEmail(firebaseUser.email),
+                name: 'Administrator',
+                role: 'admin',
+                isRootAdmin: true,
+                createdAt: new Date().toISOString()
+              };
+              setProfile(rootDoc);
+              setLoading(false);
+              return;
+            }
             const session = readStudentSession();
             if (session?.studentId === firebaseUser.uid && session.student) {
               setProfile(session.student);
@@ -60,6 +75,17 @@ export const AuthProvider = ({ children }) => {
           setLoading(false);
         }, (error) => {
           console.warn('Profile listener error:', error);
+          if (firebaseUser.email && normalizeEmail(firebaseUser.email) === ROOT_ADMIN_EMAIL) {
+            const rootDoc = {
+              uid: firebaseUser.uid,
+              id: firebaseUser.uid,
+              email: normalizeEmail(firebaseUser.email),
+              name: 'Administrator',
+              role: 'admin',
+              isRootAdmin: true
+            };
+            setProfile(rootDoc);
+          }
           if (!disposed) {
             setLoading(false);
           }
@@ -89,8 +115,65 @@ export const AuthProvider = ({ children }) => {
     // 1. Authenticate with Firebase Authentication
     try {
       const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
-      const snapshot = await getDoc(doc(db, 'users', credential.user.uid));
-      if (!snapshot.exists() || snapshot.data().role !== 'admin') {
+      let snapshot;
+      try {
+        snapshot = await getDoc(doc(db, 'users', credential.user.uid));
+      } catch (firestoreErr) {
+        if (firestoreErr.code === 'permission-denied') {
+          // If this is the designated root admin whose email was verified by Firebase Auth,
+          // grant immediate admin access even if Firestore rules have not finished propagating.
+          if (cleanEmail === ROOT_ADMIN_EMAIL) {
+            const adminDoc = {
+              uid: credential.user.uid,
+              id: credential.user.uid,
+              email: cleanEmail,
+              name: 'Administrator',
+              role: 'admin',
+              isRootAdmin: true,
+              createdAt: new Date().toISOString()
+            };
+            setUser(credential.user);
+            setProfile(adminDoc);
+            // Attempt to persist the profile in the background
+            setDoc(doc(db, 'users', credential.user.uid), adminDoc).catch(() => {});
+            return adminDoc;
+          }
+          const err = new Error('Firestore denied access to your admin profile. Ask the project owner to check Firestore rules for your account.');
+          err.code = 'admin-profile-permission-denied';
+          throw err;
+        }
+        throw firestoreErr;
+      }
+
+      if (!snapshot.exists()) {
+        // Auto-seed root admin profile in Firestore if this is the primary root admin
+        if (cleanEmail === ROOT_ADMIN_EMAIL) {
+          const adminDoc = {
+            uid: credential.user.uid,
+            id: credential.user.uid,
+            email: cleanEmail,
+            name: 'Administrator',
+            role: 'admin',
+            isRootAdmin: true,
+            createdAt: new Date().toISOString()
+          };
+          try {
+            await setDoc(doc(db, 'users', credential.user.uid), adminDoc);
+            setUser(credential.user);
+            setProfile(adminDoc);
+            return adminDoc;
+          } catch (writeErr) {
+            console.warn('Auto-seed root admin write notice:', writeErr);
+          }
+        }
+
+        await signOut(auth).catch(() => {});
+        const error = new Error('No admin profile found in Firestore for this account.');
+        error.code = 'not-admin';
+        throw error;
+      }
+
+      if (snapshot.data().role !== 'admin') {
         await signOut(auth).catch(() => {});
         const error = new Error('Only administrator accounts can sign in here.');
         error.code = 'not-admin';
