@@ -47,8 +47,15 @@ const AdminLayout = () => {
   useEffect(() => {
     const shouldLockScroll = !isDesktop && isSidebarOpen;
     document.body.style.overflow = shouldLockScroll ? 'hidden' : '';
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && !isDesktop && isSidebarOpen) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.body.style.overflow = '';
+      window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isDesktop, isSidebarOpen]);
 

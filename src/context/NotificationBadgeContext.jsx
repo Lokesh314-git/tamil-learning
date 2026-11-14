@@ -9,6 +9,7 @@ import {
 import { db } from '../firebase';
 import { useAuth } from './AuthContext';
 import NotificationToastContainer from '../components/NotificationToastContainer';
+import { setupForegroundFCMListener, requestNotificationPermissionAndRegister } from '../services/fcmService';
 
 const NotificationBadgeContext = createContext({
   adminCounts: {},
@@ -27,7 +28,8 @@ export const NotificationBadgeProvider = ({ children }) => {
   const { user, profile, role } = useAuth();
   const location = useLocation();
 
-  const userKey = user?.uid || role || 'guest';
+  const effectiveRole = role || profile?.role || (user?.email ? 'admin' : (user ? 'student' : null));
+  const userKey = user?.uid || effectiveRole || 'guest';
   const storageKey = `tl_seen_${userKey}`;
   const readNotifsKey = `tl_read_notifs_${userKey}`;
 
@@ -143,7 +145,7 @@ export const NotificationBadgeProvider = ({ children }) => {
   useEffect(() => {
     const path = location.pathname;
 
-    if (role === 'admin') {
+    if (effectiveRole === 'admin') {
       if (path.includes('/admin/students')) markSectionAsSeen('students');
       else if (path.includes('/admin/attendance')) markSectionAsSeen('attendance');
       else if (path.includes('/admin/study-materials')) markSectionAsSeen('studyMaterials');
@@ -168,7 +170,7 @@ export const NotificationBadgeProvider = ({ children }) => {
       else if (path.includes('/downloads')) markSectionAsSeen('downloads');
       else if (path.includes('/notes')) markSectionAsSeen('notes');
     }
-  }, [location.pathname, role, markSectionAsSeen]);
+  }, [location.pathname, effectiveRole, markSectionAsSeen]);
 
   // Helper to extract timestamp from firestore or JS Date or ISO string
   const getItemTime = (item) => {
@@ -200,7 +202,7 @@ export const NotificationBadgeProvider = ({ children }) => {
   // ADMIN REAL-TIME BADGE LISTENERS & REAL-TIME POPUP TOASTS
   // ============================================================
   useEffect(() => {
-    if (!user || role !== 'admin') {
+    if (!user || effectiveRole !== 'admin') {
       return;
     }
 
@@ -446,13 +448,13 @@ export const NotificationBadgeProvider = ({ children }) => {
     return () => {
       unsubs.forEach((unsub) => unsub && unsub());
     };
-  }, [user, role, seenTimestamps, addToast]);
+  }, [user, effectiveRole, seenTimestamps, addToast]);
 
   // ============================================================
   // STUDENT REAL-TIME BADGE LISTENERS & REAL-TIME POPUP TOASTS
   // ============================================================
   useEffect(() => {
-    if (!user || role === 'admin') {
+    if (!user || effectiveRole === 'admin') {
       return;
     }
 
@@ -461,6 +463,25 @@ export const NotificationBadgeProvider = ({ children }) => {
     const studentSection = profile?.section || '';
     const studentUid = user.uid || profile?.id || '';
     const encYear = encodeURIComponent(studentYear);
+
+    // Register FCM push notifications if supported
+    if (studentUid) {
+      requestNotificationPermissionAndRegister(studentUid).catch(() => {});
+    }
+
+    let fcmUnsub = () => {};
+    setupForegroundFCMListener((payload) => {
+      const title = payload.notification?.title || payload.data?.title || 'Notification';
+      const body = payload.notification?.body || payload.data?.body || '';
+      addToast({
+        type: payload.data?.type || 'notification',
+        title,
+        message: body,
+        route: payload.data?.route || '/student/notifications'
+      });
+    }).then((unsub) => {
+      if (typeof unsub === 'function') fcmUnsub = unsub;
+    }).catch(() => {});
 
     // Strict multi-dimensional class matching helpers
     const checkYearMatch = (itemYear) => {
@@ -908,9 +929,10 @@ export const NotificationBadgeProvider = ({ children }) => {
     }
 
     return () => {
+      fcmUnsub();
       unsubs.forEach((unsub) => unsub && unsub());
     };
-  }, [user, role, profile?.year, profile?.departmentId, profile?.section, seenTimestamps, readNotifIds, addToast]);
+  }, [user, effectiveRole, profile?.year, profile?.departmentId, profile?.section, seenTimestamps, readNotifIds, addToast]);
 
   const value = useMemo(() => ({
     adminCounts,

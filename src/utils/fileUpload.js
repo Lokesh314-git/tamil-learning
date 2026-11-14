@@ -1,5 +1,4 @@
 import { mongoService } from '../services/mongoService';
-import { MONGO_CONFIG } from '../config/mongoConfig';
 
 /**
  * Uploads and stores a file directly in MongoDB GridFS & Atlas Document Repository.
@@ -75,6 +74,15 @@ export const openOrDownloadFile = async (fileUrl, fileName = 'document.pdf', fil
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+
+      // Automatically revoke blob URL after 60s to prevent memory accumulation
+      if (res.blobUrl.startsWith('blob:')) {
+        setTimeout(() => {
+          try {
+            URL.revokeObjectURL(res.blobUrl);
+          } catch (_) {}
+        }, 60000);
+      }
       return;
     }
   } catch (e) {
@@ -122,7 +130,10 @@ function openBase64Blob(dataUrl, fileName = 'document.pdf') {
   }
 }
 
+export { openBase64Blob };
+
 export default {
   uploadFileToStorage,
   openOrDownloadFile,
+  openBase64Blob,
 };

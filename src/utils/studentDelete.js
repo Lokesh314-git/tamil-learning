@@ -1,7 +1,6 @@
 import { httpsCallable } from 'firebase/functions';
-import { collection, doc, getDocs, query, where, writeBatch, deleteDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, query, where, writeBatch } from 'firebase/firestore';
 import { functions } from '../firebase';
-import { mongoService } from '../services/mongoService';
 
 /**
  * Permanently and completely deletes a student across all databases (Firestore, MongoDB GridFS, and Atlas).

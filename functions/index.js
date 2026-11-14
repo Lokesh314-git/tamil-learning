@@ -1,6 +1,7 @@
 const admin = require('firebase-admin');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { MongoClient, GridFSBucket, ObjectId } = require('mongodb');
 const { Readable } = require('stream');
 const crypto = require('crypto');
@@ -78,17 +79,16 @@ exports.importStudentsToMongo = onCall({
 
   const records = students.map((student) => {
     const uid = String(student?.uid || '').trim();
-    const sifNumber = String(student?.sifNumber || '').trim().toUpperCase().replace(/\s+/g, '');
+    const sifNumber = student?.sifNumber ? String(student.sifNumber).trim().toUpperCase().replace(/\s+/g, '') : null;
     const mobileNumber = String(student?.mobileNumber || '').replace(/\D/g, '').slice(-10);
     const dob = normalizeDobServer(student?.dob);
-    if (!uid || (!sifNumber && !mobileNumber) || (mobileNumber && mobileNumber.length !== 10) || !dob) {
-      throw new HttpsError('invalid-argument', 'Each student needs a UID, SIF or 10-digit mobile number, and valid date of birth.');
+    if (!uid || !mobileNumber || mobileNumber.length !== 10 || !dob) {
+      throw new HttpsError('invalid-argument', 'Each student needs a UID, valid 10-digit mobile number, and valid date of birth.');
     }
     const record = { ...student, uid, dob, role: 'student', updatedAt: new Date() };
     if (sifNumber) record.sifNumber = sifNumber;
     else delete record.sifNumber;
     if (mobileNumber) record.mobileNumber = mobileNumber;
-    else delete record.mobileNumber;
     return record;
   });
 
@@ -101,7 +101,7 @@ exports.importStudentsToMongo = onCall({
   } catch (error) {
     console.error('[importStudentsToMongo] Import failed:', error);
     throw new HttpsError('internal', error?.code === 11000
-      ? 'A SIF or mobile number is already assigned to another imported student.'
+      ? 'A mobile number or roll number is already assigned to another imported student.'
       : 'Could not save student records to MongoDB. Check the MongoDB connection and try again.');
   }
 });
@@ -232,7 +232,7 @@ exports.syncPortalCollectionToMongo = onDocumentWritten(
 );
 
 function studentSafeTest(testData) {
-  const { questions = [], answerKey, correctAnswers, ...metadata } = testData || {};
+  const { questions = [], answerKey: _ak, correctAnswers: _ca, ...metadata } = testData || {};
   return {
     ...metadata,
     questions: questions.map((question) => {
@@ -407,6 +407,458 @@ exports.sendTestNotificationFCM = onCall({ region: 'us-central1', cors: true }, 
 
 /**
  * =========================================================================
+ * Rate-Limiting Cache for Student Sign-In Protection
+ * =========================================================================
+ */
+const studentLoginAttempts = new Map();
+
+function checkLoginRateLimit(key, maxAttempts = 10, windowMs = 15 * 60 * 1000) {
+  const now = Date.now();
+  const record = studentLoginAttempts.get(key) || { count: 0, lastAttempt: now };
+  if (now - record.lastAttempt > windowMs) {
+    record.count = 1;
+    record.lastAttempt = now;
+    studentLoginAttempts.set(key, record);
+    return true;
+  }
+  if (record.count >= maxAttempts) {
+    return false;
+  }
+  record.count += 1;
+  record.lastAttempt = now;
+  studentLoginAttempts.set(key, record);
+  return true;
+}
+
+function clearLoginRateLimit(key) {
+  studentLoginAttempts.delete(key);
+}
+
+/**
+ * Callable: Secure Student Authentication
+ * Validates Registered Mobile Number + DOB server-side,
+ * rejects ambiguous duplicate mobile numbers, ensures Firebase Auth account exists,
+ * assigns role-based custom claims, and returns a Firebase Custom Auth Token.
+ */
+exports.studentLogin = onCall({ region: 'us-central1', cors: true }, async (request) => {
+  const rawMobile = String(request.data?.mobileNumber || request.data?.identifier || '').trim();
+  const rawDob = request.data?.dob;
+
+  // 1. Mobile Number Normalization & Validation (10 digits)
+  const digitsOnly = rawMobile.replace(/\D/g, '');
+  let mobileNumber = digitsOnly;
+  if (digitsOnly.length > 10 && (digitsOnly.startsWith('91') || digitsOnly.startsWith('0'))) {
+    mobileNumber = digitsOnly.startsWith('91') ? digitsOnly.slice(2, 12) : digitsOnly.slice(-10);
+  }
+  if (mobileNumber.length > 10) {
+    mobileNumber = mobileNumber.slice(-10);
+  }
+
+  if (!mobileNumber || mobileNumber.length !== 10) {
+    throw new HttpsError('invalid-argument', 'Please enter a valid 10-digit registered mobile number.');
+  }
+
+  // 2. Date of Birth Normalization & Validation
+  const dob = normalizeDobServer(rawDob);
+  if (!dob) {
+    throw new HttpsError('invalid-argument', 'Please enter a valid Date of Birth.');
+  }
+
+  const todayIso = new Date().toISOString().split('T')[0];
+  if (dob > todayIso) {
+    throw new HttpsError('invalid-argument', 'Date of Birth cannot be in the future.');
+  }
+
+  // 3. Client IP & Rate Limiting
+  const clientIp = String(
+    request.rawRequest?.headers?.['x-forwarded-for'] ||
+    request.rawRequest?.ip ||
+    'client'
+  ).split(',')[0].trim();
+  const rateLimitKey = `${clientIp}:${mobileNumber}`;
+
+  if (!checkLoginRateLimit(rateLimitKey)) {
+    throw new HttpsError('resource-exhausted', 'Too many sign-in attempts. Please try again in 15 minutes.');
+  }
+
+  const db = admin.firestore();
+  const usersRef = db.collection('users');
+
+  // 4. Query Firestore users collection by mobileNumber and phone
+  const [mobileSnap, phoneSnap] = await Promise.all([
+    usersRef.where('role', '==', 'student').where('mobileNumber', '==', mobileNumber).get(),
+    usersRef.where('role', '==', 'student').where('phone', '==', mobileNumber).get()
+  ]);
+
+  const matchedDocsMap = new Map();
+  for (const doc of [...mobileSnap.docs, ...phoneSnap.docs]) {
+    matchedDocsMap.set(doc.id, doc);
+  }
+
+  let candidates = Array.from(matchedDocsMap.values());
+
+  // Filter out permanently deleted accounts
+  candidates = candidates.filter((d) => {
+    const data = d.data();
+    return data.isDeleted !== true && data.status !== 'deleted';
+  });
+
+  // 5. Ambiguous Duplicate Mobile Number Check
+  if (candidates.length > 1) {
+    console.warn(`[studentLogin] Ambiguous duplicate mobile number: ${mobileNumber} shared by UIDs:`, candidates.map((d) => d.id));
+    throw new HttpsError(
+      'failed-precondition',
+      'Multiple student accounts are associated with this mobile number. Please contact your college administrator for correction.'
+    );
+  }
+
+  let matchedDoc = candidates.length === 1 ? candidates[0] : null;
+
+  // 6. MongoDB fallback if Firestore direct query missed
+  if (!matchedDoc) {
+    try {
+      const client = await getMongoClient();
+      const mongoStudents = client.db(MONGO_DB_NAME).collection('students');
+      const mongoMatches = await mongoStudents.find({
+        mobileNumber,
+        isDeleted: { $ne: true },
+        status: { $ne: 'deleted' }
+      }).toArray();
+
+      if (mongoMatches.length > 1) {
+        console.warn(`[studentLogin] Ambiguous duplicate mobile in MongoDB: ${mobileNumber}`);
+        throw new HttpsError(
+          'failed-precondition',
+          'Multiple student accounts are associated with this mobile number. Please contact administration for correction.'
+        );
+      } else if (mongoMatches.length === 1) {
+        const student = mongoMatches[0];
+        const studentUid = String(student.uid || student._id);
+        const docRef = usersRef.doc(studentUid);
+        const existingSnap = await docRef.get();
+        if (!existingSnap.exists) {
+          await docRef.set({
+            ...student,
+            uid: studentUid,
+            role: 'student',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+          matchedDoc = await docRef.get();
+        } else {
+          matchedDoc = existingSnap;
+        }
+      }
+    } catch (mErr) {
+      if (mErr instanceof HttpsError) throw mErr;
+      console.warn('[studentLogin] MongoDB lookup fallback notice:', mErr.message);
+    }
+  }
+
+  // 7. Verify Record Exists
+  if (!matchedDoc || !matchedDoc.exists) {
+    throw new HttpsError('unauthenticated', 'Invalid registered mobile number or date of birth.');
+  }
+
+  const studentData = matchedDoc.data();
+  const studentUid = matchedDoc.id;
+
+  // 8. Verify Account Status
+  if (studentData.isDeleted === true || ['deleted', 'blocked', 'rejected', 'inactive'].includes(studentData.status)) {
+    throw new HttpsError('permission-denied', 'Student account is inactive or blocked. Please contact your department admin.');
+  }
+
+  // 9. Verify Secure Date of Birth Match
+  const storedDob = normalizeDobServer(studentData.dob);
+  if (!storedDob || storedDob !== dob) {
+    throw new HttpsError('unauthenticated', 'Invalid registered mobile number or date of birth.');
+  }
+
+  clearLoginRateLimit(rateLimitKey);
+
+  // 10. Ensure Firebase Auth account exists for this student UID
+  try {
+    await admin.auth().getUser(studentUid);
+  } catch (err) {
+    if (err.code === 'auth/user-not-found') {
+      await admin.auth().createUser({
+        uid: studentUid,
+        displayName: studentData.name || 'Student',
+        email: studentData.email && studentData.email.includes('@') ? studentData.email : undefined,
+      });
+    }
+  }
+
+  // 11. Set custom user claims for Firestore security rules
+  const customClaims = {
+    role: 'student',
+    year: studentData.year || '1st Year',
+    departmentId: studentData.departmentId || 'all',
+  };
+  await admin.auth().setCustomUserClaims(studentUid, customClaims);
+
+  // 12. Issue Firebase Custom Auth Token
+  const customToken = await admin.auth().createCustomToken(studentUid, customClaims);
+
+  return {
+    success: true,
+    customToken,
+    student: {
+      id: studentUid,
+      uid: studentUid,
+      name: studentData.name || 'Student',
+      email: studentData.email || '',
+      sifNumber: studentData.sifNumber || '',
+      mobileNumber,
+      rollNumber: studentData.rollNumber || '',
+      registerNumber: studentData.registerNumber || '',
+      year: studentData.year || '1st Year',
+      departmentId: studentData.departmentId || '',
+      departmentName: studentData.departmentName || '',
+      section: studentData.section || 'A',
+      role: 'student',
+      status: studentData.status || 'active',
+      isApproved: true,
+    }
+  };
+});
+
+/**
+ * Callable: Server-Side Assessment Submission & Grading
+ * Ensures answer keys and calculations are never exposed to or manipulated by the browser.
+ */
+exports.submitStudentAssessment = onCall({ region: 'us-central1', cors: true }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'You must be signed in to submit an assessment.');
+  }
+
+  const testId = String(request.data?.testId || '').trim();
+  const answers = request.data?.answers && typeof request.data.answers === 'object' ? request.data.answers : {};
+  const timeTakenMinutes = Math.max(0, Number(request.data?.timeTakenMinutes) || 0);
+
+  if (!testId) {
+    throw new HttpsError('invalid-argument', 'testId is required.');
+  }
+
+  const db = admin.firestore();
+
+  // 1. Fetch Student Profile
+  const studentSnap = await db.doc(`users/${uid}`).get();
+  if (!studentSnap.exists) {
+    throw new HttpsError('not-found', 'Student profile not found.');
+  }
+  const student = studentSnap.data();
+  if (student.isDeleted === true || ['deleted', 'blocked', 'rejected'].includes(student.status)) {
+    throw new HttpsError('permission-denied', 'Account is inactive.');
+  }
+
+  // 2. Fetch authoritative Test with answer key
+  const testSnap = await db.doc(`tests/${testId}`).get();
+  if (!testSnap.exists) {
+    throw new HttpsError('not-found', 'Assessment not found.');
+  }
+  const testData = testSnap.data();
+
+  // Check Year matching
+  const testYear = String(testData.year || '').trim();
+  if (
+    testYear &&
+    !['all', 'all years'].includes(testYear.toLowerCase()) &&
+    student.year &&
+    testYear.toLowerCase() !== student.year.toLowerCase()
+  ) {
+    throw new HttpsError('permission-denied', 'This assessment is not assigned to your academic year.');
+  }
+
+  const questions = Array.isArray(testData.questions) ? testData.questions : [];
+  if (!questions.length) {
+    throw new HttpsError('invalid-argument', 'This assessment has no questions.');
+  }
+
+  // 3. Evaluate score securely server-side
+  let score = 0;
+  const breakdown = questions.map((q, index) => {
+    const correctAnswer = q.correctAnswer ?? q.correctOption ?? 0;
+    const selected = answers[index];
+    const isCorrect = selected !== undefined && String(selected) === String(correctAnswer);
+    if (isCorrect) score += 1;
+    return {
+      question: q.question || q.questionText || '',
+      options: Array.isArray(q.options) ? q.options : [],
+      correctAnswer,
+      studentChoice: selected === undefined ? -1 : Number(selected),
+      isCorrect,
+      explanation: q.explanation || '',
+    };
+  });
+
+  const percentage = Math.round((score / questions.length) * 100);
+  const resultDocId = `${uid}_${testId}`;
+  const resultRef = db.doc(`results/${resultDocId}`);
+
+  // Check previous attempts
+  const prevSnap = await resultRef.get();
+  let prevAttempts = 0;
+  let prevBestScore = 0;
+  let createdAt = admin.firestore.FieldValue.serverTimestamp();
+
+  if (prevSnap.exists) {
+    const prev = prevSnap.data();
+    prevAttempts = Number(prev.attemptsCount) || 1;
+    prevBestScore = Number(prev.bestScore != null ? prev.bestScore : prev.score) || 0;
+    if (prev.createdAt) createdAt = prev.createdAt;
+  }
+
+  const resultPayload = {
+    id: resultDocId,
+    studentId: uid,
+    studentName: student.name || 'Student',
+    email: student.email || '',
+    sifNumber: student.sifNumber || student.rollNumber || '',
+    testId,
+    testTitle: testData.title || 'Online Assessment',
+    year: student.year || testData.year || '',
+    departmentId: student.departmentId || testData.departmentId || '',
+    departmentName: student.departmentName || testData.departmentName || '',
+    score,
+    totalQuestions: questions.length,
+    total: questions.length,
+    percentage,
+    breakdown,
+    submittedAt: new Date().toISOString(),
+    timeTakenMinutes,
+    attemptsCount: prevAttempts + 1,
+    bestScore: Math.max(score, prevBestScore),
+    createdAt,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await resultRef.set(resultPayload, { merge: true });
+
+  // Real-time admin notification
+  try {
+    await db.collection('notifications').add({
+      title: '📊 New Test Attempt Completed',
+      body: `${resultPayload.studentName} (${resultPayload.year || 'Student'}) completed "${resultPayload.testTitle}": Score ${resultPayload.score}/${resultPayload.totalQuestions} (${resultPayload.percentage}%).`,
+      type: 'test_submission',
+      category: 'tests',
+      recipientRole: 'admin',
+      targetScope: 'admin',
+      testId: resultPayload.testId,
+      studentId: resultPayload.studentId,
+      studentName: resultPayload.studentName,
+      read: false,
+      isRead: false,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (_) {}
+
+  return { success: true, result: resultPayload };
+});
+
+/**
+ * Helper: Deliver due scheduled notifications across target FCM topics
+ */
+async function deliverPendingScheduledNotifications() {
+  const db = admin.firestore();
+  const now = new Date();
+
+  // Find notifications that were scheduled and are due
+  const snap = await db.collection('notifications')
+    .where('isScheduled', '==', true)
+    .where('status', '==', 'scheduled')
+    .get();
+
+  let deliveredCount = 0;
+
+  for (const docSnap of snap.docs) {
+    const data = docSnap.data();
+    const scheduledTime = data.scheduledFor ? new Date(data.scheduledFor).getTime() : 0;
+
+    if (!scheduledTime || scheduledTime <= now.getTime()) {
+      const title = data.title || 'Academic Activity';
+      const body = data.body || 'A new update has been published in the student portal.';
+      const notifId = docSnap.id;
+
+      const topics = [];
+      if (!data.targetType || data.targetType === 'all') {
+        topics.push('all_students');
+      } else if (data.targetType === 'year' && data.targetYear && data.targetYear !== 'all') {
+        topics.push(`year_${data.targetYear}`);
+      } else if (data.targetType === 'department' && data.targetDepartmentId && data.targetDepartmentId !== 'all') {
+        topics.push(`dept_${data.targetDepartmentId}`);
+      } else if (data.targetType === 'section' && data.targetSection && data.targetSection !== 'all') {
+        topics.push(`section_${data.targetSection}`);
+      } else {
+        topics.push('all_students');
+      }
+
+      for (const topic of topics) {
+        try {
+          await admin.messaging().send({
+            topic,
+            notification: { title, body },
+            data: {
+              notificationId: String(notifId),
+              testId: String(data.testId || ''),
+              type: String(data.type || 'new_test'),
+              route: String(data.route || '/student/notifications'),
+            },
+            webpush: {
+              fcmOptions: {
+                link: data.route || '/student/notifications'
+              }
+            }
+          });
+        } catch (fcmErr) {
+          console.error(`[Scheduled FCM] Failed for ${notifId} topic ${topic}:`, fcmErr.message);
+        }
+      }
+
+      await docSnap.ref.update({
+        status: 'sent',
+        sentAt: admin.firestore.FieldValue.serverTimestamp(),
+        deliveredScheduledAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      deliveredCount++;
+    }
+  }
+
+  return deliveredCount;
+}
+
+/**
+ * Scheduled Cloud Function: Runs every 5 minutes to deliver scheduled notifications
+ */
+exports.scheduledNotificationDelivery = onSchedule(
+  {
+    schedule: 'every 5 minutes',
+    region: 'us-central1',
+    timeZone: 'Asia/Kolkata',
+  },
+  async () => {
+    try {
+      const count = await deliverPendingScheduledNotifications();
+      console.log(`[Scheduler] Delivered ${count} scheduled notifications.`);
+    } catch (err) {
+      console.error('[Scheduler] Notification delivery error:', err);
+    }
+  }
+);
+
+/**
+ * Callable: On-demand check and delivery of scheduled notifications (Admin only)
+ */
+exports.checkAndDeliverScheduledNotifications = onCall({ region: 'us-central1', cors: true }, async (request) => {
+  await assertAdmin(request);
+  const count = await deliverPendingScheduledNotifications();
+  return { success: true, deliveredCount: count };
+});
+
+/**
+ * =========================================================================
  * MongoDB Atlas & GridFS File Storage Integration
  * Cluster: cluster0.qfdmujt.mongodb.net
  * Database: tamil_learning
@@ -414,7 +866,7 @@ exports.sendTestNotificationFCM = onCall({ region: 'us-central1', cors: true }, 
  */
 const MONGO_DB_NAME = 'tamil_learning';
 const GRIDFS_BUCKET_NAME = 'study_materials_files';
-const CLOUD_FUNCTIONS_BASE_URL = 'https://us-central1-tamil-learning-2d773.cloudfunctions.net';
+const CLOUD_FUNCTIONS_BASE_URL = 'https://us-central1-tamil-learning-9f609.cloudfunctions.net';
 const STUDENT_API_COLLECTIONS = new Set([
   'attendance', 'announcements', 'assignments', 'downloads', 'feedback', 'notes', 'notifications',
   'publishedTests', 'reports', 'results', 'studyMaterials', 'study_materials', 'task_submissions',
@@ -426,8 +878,9 @@ const STUDENT_PRIVATE_COLLECTIONS = new Set([
 ]);
 const STUDENT_WRITABLE_COLLECTIONS = new Set(['feedback', 'notes', 'task_submissions', 'taskSubmissions', 'assignmentSubmissions']);
 const STUDENT_ALLOWED_FILTERS = new Set(['year', 'departmentId', 'unitNumber', 'status', 'category']);
-const STUDENT_CORS_ORIGINS = [
+const _STUDENT_CORS_ORIGINS = [
   'http://localhost:5173', 'http://127.0.0.1:5173',
+  'https://tamil-learning-9f609.web.app', 'https://tamil-learning-9f609.firebaseapp.com',
   'https://tamil-learning-2d773.web.app', 'https://tamil-learning-2d773.firebaseapp.com',
   'https://lokesh314-git.github.io', 'https://tamillearning2024-sys.github.io',
 ];
@@ -561,30 +1014,75 @@ exports.studentMongoApi = onRequest({
     const pathname = new URL(req.url, 'https://student-api.local').pathname.replace(/\/+$/, '') || '/';
 
     if (req.method === 'POST' && pathname === '/login') {
-      const identifier = String(req.body?.identifier || '').trim().slice(0, 80);
-      const dob = normalizeDobServer(req.body?.dob);
-      if (!identifier || !dob) return res.status(400).json({ error: 'Invalid Mobile Number/SIF Number or Date of Birth.' });
-      const sifNumber = identifier.toUpperCase().replace(/\s+/g, '');
-      const mobileNumber = identifier.replace(/\D/g, '').slice(-10);
-      const matches = [];
-      if (/^[A-Z0-9_-]{2,40}$/.test(sifNumber)) matches.push({ sifNumber });
-      if (mobileNumber.length === 10) matches.push({ mobileNumber });
+      const rawMobile = String(req.body?.mobileNumber || req.body?.identifier || '').trim();
+      const rawDob = req.body?.dob;
+      const cleanMobile = rawMobile.replace(/\D/g, '').slice(-10);
+      const dob = normalizeDobServer(rawDob);
+      if (!cleanMobile || cleanMobile.length !== 10 || !dob) {
+        return res.status(400).json({ error: 'Please enter a valid 10-digit registered mobile number and date of birth.' });
+      }
+
+      const clientIp = String(req.headers['x-forwarded-for'] || req.ip || 'unknown').split(',')[0].trim().slice(0, 80);
+      const attemptKey = crypto.createHmac('sha256', studentJwtSecret()).update(`${clientIp}:${cleanMobile}`).digest('hex');
       const attempts = mongoDb.collection('student_login_attempts');
       await attempts.createIndex({ lastAttempt: 1 }, { expireAfterSeconds: 900 });
-      const clientIp = String(req.headers['x-forwarded-for'] || req.ip || 'unknown').split(',')[0].trim().slice(0, 80);
-      const attemptKey = crypto.createHmac('sha256', studentJwtSecret()).update(`${clientIp}:${sifNumber}`).digest('hex');
       const recentAttempts = await attempts.findOne({ _id: attemptKey });
       const now = new Date();
       if (recentAttempts?.count >= 10 && now.getTime() - recentAttempts.lastAttempt.getTime() < 15 * 60 * 1000) {
         return res.status(429).json({ error: 'Too many sign-in attempts. Please try again in 15 minutes.' });
       }
       await attempts.updateOne({ _id: attemptKey }, { $inc: { count: 1 }, $set: { lastAttempt: now } }, { upsert: true });
-      const student = matches.length ? await students.findOne({ $or: matches, dob, status: 'active', isDeleted: { $ne: true } }) : null;
-      if (!student) return res.status(401).json({ error: 'Invalid Mobile Number/SIF Number or Date of Birth.' });
+
+      const matches = await students.find({
+        mobileNumber: cleanMobile,
+        isDeleted: { $ne: true },
+        status: { $ne: 'deleted' }
+      }).toArray();
+
+      if (matches.length > 1) {
+        return res.status(409).json({
+          error: 'Multiple accounts are associated with this mobile number. Please contact administration for correction.'
+        });
+      }
+
+      const student = matches[0];
+      if (!student || normalizeDobServer(student.dob) !== dob) {
+        return res.status(401).json({ error: 'Invalid registered mobile number or date of birth.' });
+      }
+      if (['blocked', 'inactive', 'rejected'].includes(student.status)) {
+        return res.status(403).json({ error: 'Student account is inactive or blocked. Please contact your department admin.' });
+      }
+
       await attempts.deleteOne({ _id: attemptKey });
       const studentId = String(student.uid || student._id);
       const token = signStudentToken(studentId);
-      return res.json({ studentId, token, expiresIn: 604800, student: toApiValue(student) });
+
+      // Issue Firebase Custom Auth Token so student can authenticate with Firebase Auth
+      let customToken = '';
+      try {
+        try {
+          await admin.auth().getUser(studentId);
+        } catch (uErr) {
+          if (uErr.code === 'auth/user-not-found') {
+            await admin.auth().createUser({
+              uid: studentId,
+              displayName: student.name || 'Student',
+              email: student.email && student.email.includes('@') ? student.email : undefined,
+            });
+          }
+        }
+        const customClaims = {
+          role: student.role || 'student',
+          year: student.year || '1st Year',
+          departmentId: student.departmentId || 'all',
+        };
+        await admin.auth().setCustomUserClaims(studentId, customClaims);
+        customToken = await admin.auth().createCustomToken(studentId, customClaims);
+      } catch (tokErr) {
+        console.error('[studentMongoApi] Failed to issue custom token:', tokErr.message);
+      }
+
+      return res.json({ studentId, token, customToken, expiresIn: 604800, student: toApiValue(student) });
     }
 
     const studentId = tokenStudentId(req);
@@ -936,7 +1434,7 @@ exports.getMongoStorageStats = onCall({ region: 'us-central1', cors: true, secre
   try {
     const { db } = await getGridFSBucket();
     const filesCollection = db.collection(`${GRIDFS_BUCKET_NAME}.files`);
-    const chunksCollection = db.collection(`${GRIDFS_BUCKET_NAME}.chunks`);
+    const _chunksCollection = db.collection(`${GRIDFS_BUCKET_NAME}.chunks`);
 
     const totalFiles = await filesCollection.countDocuments();
     const filesStats = await filesCollection.aggregate([
@@ -1338,4 +1836,91 @@ exports.syncFirestoreToMongo = onCall({ region: 'us-central1', cors: true, secre
     console.error('syncFirestoreToMongo error:', err);
     throw new HttpsError('internal', err?.message || 'Sync to MongoDB failed');
   }
+});
+
+/**
+ * Callable: Audit Student Mobile Numbers & Duplicate Detection Report
+ * Accessible only by administrators.
+ * Scans all student records in Firestore users collection and categorizes:
+ * - Duplicate mobile numbers (multiple students sharing the same phone)
+ * - Missing mobile numbers
+ * - Invalid mobile numbers (not 10 digits)
+ * - Missing or invalid date of birth records
+ */
+exports.auditStudentMobileNumbers = onCall({ region: 'us-central1', cors: true }, async (request) => {
+  await assertAdmin(request);
+  const db = admin.firestore();
+  const snap = await db.collection('users').where('role', '==', 'student').get();
+
+  const mobileMap = new Map();
+  const missingMobiles = [];
+  const invalidMobiles = [];
+  const missingDobs = [];
+  let validMobileCount = 0;
+
+  snap.forEach((doc) => {
+    const data = doc.data();
+    if (data.isDeleted === true || data.status === 'deleted') return;
+
+    const studentInfo = {
+      id: doc.id,
+      uid: doc.id,
+      name: data.name || 'Unnamed Student',
+      sifNumber: data.sifNumber || '-',
+      rollNumber: data.rollNumber || '-',
+      departmentName: data.departmentName || data.class || '-',
+      year: data.year || '-',
+      status: data.status || 'active',
+      rawMobile: data.mobileNumber || data.phone || '',
+      dob: data.dob || '',
+    };
+
+    const digits = String(studentInfo.rawMobile).replace(/\D/g, '');
+    const cleanMobile = digits.length > 10 && digits.startsWith('91') ? digits.slice(2, 12) : digits.slice(-10);
+
+    // Check DOB
+    const normalizedDob = normalizeDobServer(data.dob);
+    if (!normalizedDob) {
+      missingDobs.push(studentInfo);
+    }
+
+    // Check Mobile
+    if (!digits) {
+      missingMobiles.push(studentInfo);
+    } else if (cleanMobile.length !== 10) {
+      invalidMobiles.push({ ...studentInfo, normalizedMobile: cleanMobile });
+    } else {
+      validMobileCount++;
+      const existing = mobileMap.get(cleanMobile) || [];
+      existing.push(studentInfo);
+      mobileMap.set(cleanMobile, existing);
+    }
+  });
+
+  const duplicates = [];
+  for (const [mobileNumber, list] of mobileMap.entries()) {
+    if (list.length > 1) {
+      duplicates.push({
+        mobileNumber,
+        count: list.length,
+        students: list
+      });
+    }
+  }
+
+  return {
+    success: true,
+    totalActiveStudents: snap.size - (missingMobiles.length + invalidMobiles.length),
+    totalStudentsScanned: snap.size,
+    validMobileCount,
+    duplicateMobileCount: duplicates.length,
+    missingMobileCount: missingMobiles.length,
+    invalidMobileCount: invalidMobiles.length,
+    missingDobCount: missingDobs.length,
+    duplicates,
+    missingMobiles,
+    invalidMobiles,
+    missingDobs,
+    generatedAt: new Date().toISOString()
+  };
 });

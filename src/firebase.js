@@ -13,12 +13,13 @@ import {
 import { getFunctions } from 'firebase/functions';
 
 export const firebaseConfig = {
-  apiKey: "AIzaSyBfCwllgEfXaZj3682cIuWo2G6bgg98wvs",
-  authDomain: "tamil-learning-2d773.firebaseapp.com",
-  projectId: "tamil-learning-2d773",
-  messagingSenderId: "65145408113",
-  appId: "1:65145408113:web:d171b55ea346e51bb829d0",
-  measurementId: "G-FS3NHJNFCB"
+  apiKey: "AIzaSyALJkLtYmUncwLzzxA1lCzBD_4uhtAG9AE",
+  authDomain: "tamil-learning-9f609.firebaseapp.com",
+  projectId: "tamil-learning-9f609",
+  storageBucket: "tamil-learning-9f609.firebasestorage.app",
+  messagingSenderId: "1001786235235",
+  appId: "1:1001786235235:web:a5b9ac1c24a1b15111db56",
+  measurementId: "G-NX4TFD061T"
 };
 
 // Avoid re-initialization during Vite HMR

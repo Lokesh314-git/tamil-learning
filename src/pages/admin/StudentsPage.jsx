@@ -5,13 +5,14 @@ import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth, db, functions } from '../../firebase';
 import AddStudentModal from '../../components/AddStudentModal';
 import ImportStudentsModal from '../../components/ImportStudentsModal';
+import DuplicateMobileModal from '../../components/DuplicateMobileModal';
 import StudentTable from '../../components/StudentTable';
 import Loader from '../../components/Loader';
 import { useAuth } from '../../context/AuthContext';
 import { YEARS, sortDepartmentsByName } from '../../utils/departments';
 import PageHeader from '../../components/ui/PageHeader';
 import Modal from '../../components/ui/Modal';
-import { FileSpreadsheet, Upload, UserCheck, Users, Edit3, UserPlus, Trash2 } from 'lucide-react';
+import { FileSpreadsheet, Upload, UserCheck, Users, Edit3, UserPlus, Trash2, Smartphone } from 'lucide-react';
 import { deleteStudentCompletely } from '../../utils/studentDelete';
 import { normalizeDob, normalizeMobile, normalizeSif } from '../../utils/studentImport';
 
@@ -21,6 +22,7 @@ const StudentsPage = () => {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [filterYear, setFilterYear] = useState('All');
@@ -553,7 +555,10 @@ const StudentsPage = () => {
               <option key={sec} value={sec}>Section {sec}</option>
             ))}
           </select>
-          <button className="btn btn-secondary" onClick={() => setModalOpen(true)}>+ Add Student</button>
+          <button className="btn btn-secondary" onClick={() => setAuditModalOpen(true)}>
+            <Smartphone size={14} /> Mobile Audit
+          </button>
+          <button className="btn btn-primary" onClick={() => setModalOpen(true)}>+ Add Student</button>
         </div>
       </div>
 
@@ -563,7 +568,7 @@ const StudentsPage = () => {
           <FileSpreadsheet size={20} style={{ color: 'var(--color-success)', flexShrink: 0 }} />
           <div>
             <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--color-text)' }}>Import Students from Excel</div>
-            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>Upload .xlsx / .xls with Name, Roll No., SIF Number, Date of Birth, Mobile Number. Students are auto-assigned to the selected Year, Class &amp; Section.</div>
+            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>Upload .xlsx / .xls with Student Name, Roll Number, Date of Birth, Mobile Number. Students are auto-assigned to the selected Year, Class &amp; Section.</div>
           </div>
         </div>
         <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={() => setImportModalOpen(true)}>
@@ -861,6 +866,13 @@ const StudentsPage = () => {
           setMessage(`Successfully imported and created ${count} student accounts!`);
           load();
         }}
+      />
+
+      <DuplicateMobileModal
+        open={auditModalOpen}
+        onClose={() => setAuditModalOpen(false)}
+        students={students}
+        onSelectStudent={(st) => openEditModal(st)}
       />
     </div>
   );

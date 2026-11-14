@@ -61,8 +61,8 @@ const StudentTests = () => {
       if (ready >= 2) setLoading(false);
     };
 
-    // 1. Fetch Tests (Filtered strictly by Student's Year & Department)
-    const unsubTests = onSnapshot(collection(db, 'tests'), (snap) => {
+    // 1. Fetch Published Tests (Student-safe, without plaintext answer keys)
+    const unsubTests = onSnapshot(collection(db, 'publishedTests'), (snap) => {
       const list = [];
       snap.forEach((d) => {
         const data = d.data() || {};

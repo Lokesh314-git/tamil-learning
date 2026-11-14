@@ -120,8 +120,8 @@ const StudentUnits = () => {
       check();
     }, () => check());
 
-    // 4. Tests (filtered strictly by student's year)
-    const unsubTests = onSnapshot(collection(db, 'tests'), (snap) => {
+    // 4. Published Tests (filtered strictly by student's year)
+    const unsubTests = onSnapshot(collection(db, 'publishedTests'), (snap) => {
       const list = [];
       snap.forEach((d) => {
         const data = d.data() || {};

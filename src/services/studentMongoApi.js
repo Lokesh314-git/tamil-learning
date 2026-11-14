@@ -13,7 +13,8 @@ import {
   serverTimestamp as firestoreServerTimestamp,
   writeBatch as firestoreWriteBatch
 } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, auth, functions } from '../firebase';
 
 const SESSION_KEY = 'tamil_student_session';
 const LEGACY_SESSION_KEY = 'tamil_student_mongo_session';
@@ -68,94 +69,84 @@ export const clearStudentSession = () => {
  * 100% compatible with Firebase Spark (Free Tier) plan - No Cloud Functions required.
  */
 export const studentMongoApi = {
-  async login({ identifier, dob }) {
-    const cleanId = String(identifier || '').trim();
+  async login({ mobileNumber, dob, identifier }) {
+    const rawMobile = String(mobileNumber || identifier || '').trim();
+    const cleanMobile = rawMobile.replace(/\D/g, '').slice(-10);
     const cleanDob = normalizeDob(dob);
 
-    if (!cleanId || !cleanDob) {
-      const error = new Error('Please enter a valid SIF/Mobile Number and Date of Birth.');
+    if (!cleanMobile || cleanMobile.length !== 10) {
+      const error = new Error('Please enter a valid 10-digit registered mobile number.');
       error.status = 400;
       throw error;
     }
 
-    const sifCandidate = cleanId.toUpperCase().replace(/\s+/g, '');
-    const mobileCandidate = cleanId.replace(/\D/g, '').slice(-10);
-    const usersRef = firestoreCollection(db, 'users');
-
-    // Run SIF, Roll Number, and Mobile queries in parallel for instant response
-    const queryPromises = [];
-    if (sifCandidate) {
-      queryPromises.push(firestoreGetDocs(firestoreQuery(usersRef, firestoreWhere('sifNumber', '==', sifCandidate))).catch(() => null));
-      queryPromises.push(firestoreGetDocs(firestoreQuery(usersRef, firestoreWhere('rollNumber', '==', cleanId))).catch(() => null));
-      queryPromises.push(firestoreGetDocs(firestoreQuery(usersRef, firestoreWhere('registerNumber', '==', cleanId))).catch(() => null));
-    }
-    if (mobileCandidate.length === 10) {
-      queryPromises.push(firestoreGetDocs(firestoreQuery(usersRef, firestoreWhere('mobileNumber', '==', mobileCandidate))).catch(() => null));
+    if (!cleanDob) {
+      const error = new Error('Please enter a valid Date of Birth.');
+      error.status = 400;
+      throw error;
     }
 
-    const snaps = await Promise.all(queryPromises);
-    let matchedDoc = null;
+    // 1. Primary: Secure Cloud Function verification & custom token issuance
+    try {
+      const studentLoginCallable = httpsCallable(functions, 'studentLogin');
+      const response = await studentLoginCallable({ mobileNumber: cleanMobile, dob: cleanDob });
+      if (response?.data?.student) {
+        const student = response.data.student;
+        const customToken = response.data.customToken;
+        const session = {
+          studentId: student.uid || student.id,
+          token: customToken || `session_${student.uid}`,
+          customToken,
+          authenticated: true,
+          student,
+        };
+        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+        localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
+        return { ...student, customToken };
+      }
+    } catch (callableErr) {
+      console.warn('[studentMongoApi] Callable studentLogin attempt notice:', callableErr.message);
+      if (callableErr.code === 'unauthenticated' || callableErr.code === 'permission-denied' || callableErr.code === 'resource-exhausted') {
+        const err = new Error(callableErr.message || 'Invalid mobile number or date of birth.');
+        err.status = 401;
+        throw err;
+      }
+    }
 
-    for (const snap of snaps) {
-      if (snap && !snap.empty) {
-        const found = snap.docs.find((d) => normalizeDob(d.data()?.dob) === cleanDob);
-        if (found) {
-          matchedDoc = found;
-          break;
+    // 2. Secondary fallback: Cloud Function HTTP endpoint
+    try {
+      const res = await fetch('https://us-central1-tamil-learning-9f609.cloudfunctions.net/studentMongoApi/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mobileNumber: cleanMobile, dob: cleanDob })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.student) {
+          const student = { ...data.student, id: data.studentId || data.student?.uid, uid: data.studentId || data.student?.uid };
+          const session = {
+            studentId: student.uid,
+            token: data.customToken || data.token,
+            customToken: data.customToken,
+            authenticated: true,
+            student,
+          };
+          localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+          localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
+          return { ...student, customToken: data.customToken };
         }
+      } else if (res.status === 401 || res.status === 429) {
+        const errData = await res.json().catch(() => ({}));
+        const err = new Error(errData.error || 'Invalid mobile number or date of birth.');
+        err.status = res.status;
+        throw err;
       }
+    } catch (fetchErr) {
+      if (fetchErr.status === 401 || fetchErr.status === 429) throw fetchErr;
+      console.warn('[studentMongoApi] HTTP login fallback notice:', fetchErr.message);
     }
 
-    // Fallback: search in student users if direct indices missed
-    if (!matchedDoc) {
-      try {
-        const qStudents = firestoreQuery(usersRef, firestoreWhere('role', '==', 'student'));
-        const allSnap = await firestoreGetDocs(qStudents);
-        matchedDoc = allSnap.docs.find((d) => {
-          const data = d.data() || {};
-          const sSif = String(data.sifNumber || data.sif || data.sifNo || data.rollNumber || '').toUpperCase().replace(/\s+/g, '');
-          const sMobile = String(data.mobileNumber || data.mobile || data.phone || '').replace(/\D/g, '').slice(-10);
-          const sDob = normalizeDob(data.dob);
-
-          const matchesId = (sSif && sSif === sifCandidate) || (sMobile && mobileCandidate.length === 10 && sMobile === mobileCandidate);
-          return matchesId && sDob === cleanDob;
-        });
-      } catch (e) {
-        console.warn('Fallback student query error:', e);
-      }
-    }
-
-    if (!matchedDoc) {
-      const error = new Error('Invalid Mobile Number/SIF Number or Date of Birth.');
-      error.status = 401;
-      throw error;
-    }
-
-    const rawData = matchedDoc.data();
-    const studentData = { id: matchedDoc.id, uid: matchedDoc.id, ...rawData };
-
-    if (
-      studentData.isDeleted === true ||
-      studentData.status === 'blocked' ||
-      studentData.status === 'rejected' ||
-      studentData.status === 'deleted'
-    ) {
-      const error = new Error('Student account is inactive. Please contact your department admin.');
-      error.status = 401;
-      throw error;
-    }
-
-    const session = {
-      studentId: studentData.uid,
-      token: `local_token_${studentData.uid}`,
-      authenticated: true,
-      student: studentData,
-    };
-
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
-
-    return studentData;
+    throw new Error('Invalid mobile number or date of birth.');
   },
 
   async me() {
@@ -217,6 +208,30 @@ export const studentMongoApi = {
   },
 
   async submitTest(payload = {}) {
+    const testId = payload?.testId || payload?.testData?.id;
+    if (!testId || testId === 'undefined') {
+      throw new Error('Test identifier is missing.');
+    }
+
+    // 1. Primary: Server-Side Assessment Evaluation via Cloud Function
+    try {
+      const submitFn = httpsCallable(functions, 'submitStudentAssessment');
+      const response = await submitFn({
+        testId,
+        answers: payload.answers || {},
+        timeTakenMinutes: Math.max(0, Number(payload.timeTakenMinutes) || 0),
+      });
+      if (response?.data?.result) {
+        return response.data.result;
+      }
+    } catch (fnErr) {
+      console.warn('[submitTest] Backend assessment submission notice:', fnErr.message);
+      if (fnErr.code === 'unauthenticated' || fnErr.code === 'permission-denied') {
+        throw new Error(fnErr.message || 'You must be signed in as an active student to submit this assessment.');
+      }
+    }
+
+    // 2. Fallback execution if cloud function is offline
     const session = readStudentSession();
     const sessionStudent = session?.student || (session?.studentId ? { uid: session.studentId, id: session.studentId } : null);
     const authUser = auth.currentUser;
@@ -232,11 +247,6 @@ export const studentMongoApi = {
 
     if (!studentId || studentId === 'undefined') {
       throw new Error('Student identifier is missing. Please ensure you are logged in before submitting.');
-    }
-
-    const testId = payload?.testId || payload?.testData?.id;
-    if (!testId || testId === 'undefined') {
-      throw new Error('Test identifier is missing.');
     }
 
     let testData = payload.testData || null;

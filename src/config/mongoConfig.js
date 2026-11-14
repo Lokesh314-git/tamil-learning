@@ -9,7 +9,7 @@ export const MONGO_CONFIG = {
   appName: 'Cluster0',
   databaseName: 'tamil_learning',
   bucketName: 'study_materials_files',
-  apiBaseUrl: 'https://us-central1-tamil-learning-2d773.cloudfunctions.net/api',
+  apiBaseUrl: 'https://us-central1-tamil-learning-9f609.cloudfunctions.net/api',
   collections: {
     students: 'students',
     studyMaterials: 'study_materials',
@@ -26,11 +26,11 @@ export const MONGO_CONFIG = {
     feedback: 'feedback',
   },
   endpoints: {
-    upload: 'https://us-central1-tamil-learning-2d773.cloudfunctions.net/api/materials/upload',
-    materials: 'https://us-central1-tamil-learning-2d773.cloudfunctions.net/api/materials',
-    download: 'https://us-central1-tamil-learning-2d773.cloudfunctions.net/api/materials/download',
-    status: 'https://us-central1-tamil-learning-2d773.cloudfunctions.net/api/materials/status',
-    migrate: 'https://us-central1-tamil-learning-2d773.cloudfunctions.net/api/materials/migrate',
+    upload: 'https://us-central1-tamil-learning-9f609.cloudfunctions.net/api/materials/upload',
+    materials: 'https://us-central1-tamil-learning-9f609.cloudfunctions.net/api/materials',
+    download: 'https://us-central1-tamil-learning-9f609.cloudfunctions.net/api/materials/download',
+    status: 'https://us-central1-tamil-learning-9f609.cloudfunctions.net/api/materials/status',
+    migrate: 'https://us-central1-tamil-learning-9f609.cloudfunctions.net/api/materials/migrate',
   }
 };
 

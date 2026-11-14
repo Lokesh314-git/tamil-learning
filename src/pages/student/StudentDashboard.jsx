@@ -172,8 +172,8 @@ const StudentDashboard = () => {
       setCounts((c) => ({ ...c, units: count }));
     }, onListenError));
 
-    // 2. Tests (matches student's year or All Years)
-    unsubscribers.push(onSnapshot(collection(db, 'tests'), (snap) => {
+    // 2. Published Tests (matches student's year or All Years)
+    unsubscribers.push(onSnapshot(collection(db, 'publishedTests'), (snap) => {
       let count = 0;
       snap.forEach((d) => {
         const data = d.data() || {};

@@ -2,102 +2,287 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Helper function to check if user is signed into Firebase Auth
-    function signedIn() { 
-      return request.auth != null; 
+
+    // =============================================================
+    // Helper Functions
+    // =============================================================
+
+    // User is genuinely authenticated with Firebase Authentication
+    function signedIn() {
+      return request.auth != null && request.auth.uid != null;
     }
-    
-    // Helper function to check if user is an Administrator
+
+    // User has Administrator privileges (via Auth custom claims or users doc)
     function isAdmin() {
       return signedIn() && (
         request.auth.token.role == 'admin' ||
+        request.auth.token.admin == true ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
       );
     }
 
-    // -------------------------------------------------------------
+    // Checks if the authenticated user is the target user
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    // Checks ownership on an existing resource document
+    function isResourceOwner() {
+      return signedIn() && (
+        resource.data.studentId == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.uid == request.auth.uid
+      );
+    }
+
+    // Checks ownership on an incoming write resource document
+    function isIncomingOwner() {
+      return signedIn() && (
+        request.resource.data.studentId == request.auth.uid ||
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.uid == request.auth.uid
+      );
+    }
+
+    // =============================================================
     // 1. User Profiles & Accounts (Admins & Students)
-    // -------------------------------------------------------------
+    // =============================================================
     match /users/{userId} {
-      // Allows student identification lookup during login and admin student management
-      allow read: if true;
-      allow create: if true;
-      allow update: if true;
-      allow delete: if isAdmin() || (signedIn() && request.auth.uid == userId);
+      // Admins can read any user profile; students can read only their own profile
+      allow read: if isAdmin() || isOwner(userId);
+
+      // Only administrators can create or delete user profiles
+      allow create, delete: if isAdmin();
+
+      // Updates: Admins can update all fields; students can only update permitted personal fields
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.status == resource.data.status &&
+        (!('uid' in request.resource.data) || request.resource.data.uid == userId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'address',
+          'parentName',
+          'parentMobile',
+          'emergencyContact',
+          'bloodGroup',
+          'profileUpdatedAt',
+          'photoUrl',
+          'phone',
+          'fcmToken',
+          'fcmTokens',
+          'updatedAt'
+        ])
+      );
     }
 
-    // -------------------------------------------------------------
+    // =============================================================
     // 2. Academic Curriculum & Course Structure
-    // -------------------------------------------------------------
-    match /departments/{id} { allow read, write: if true; }
-    match /classes/{id} { allow read, write: if true; }
-    match /units/{id} { allow read, write: if true; }
-    match /study_materials/{id} { allow read, write: if true; }
-    match /studyMaterials/{id} { allow read, write: if true; }
-    match /downloads/{id} { allow read, write: if true; }
-    match /thirukkurals/{id} { allow read, write: if true; }
-    match /settings/{id} { allow read, write: if true; }
+    // =============================================================
+    match /departments/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /classes/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /units/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /study_materials/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /studyMaterials/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /downloads/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /thirukkurals/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /settings/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
 
-    // -------------------------------------------------------------
+    // =============================================================
     // 3. Tests, Quizzes & Assessments
-    // -------------------------------------------------------------
-    match /tests/{id} { allow read, write: if true; }
-    match /publishedTests/{id} { allow read, write: if true; }
-    match /quizzes/{id} { allow read, write: if true; }
+    // =============================================================
+    // Master tests with answer keys are restricted to Admins only
+    match /tests/{id} {
+      allow read, write: if isAdmin();
+    }
 
-    // -------------------------------------------------------------
+    // Published tests (student-safe, without answer keys)
+    match /publishedTests/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /quizzes/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // =============================================================
     // 4. Test Results & Reports
-    // -------------------------------------------------------------
-    match /results/{id} { 
-      allow read, write: if true; 
+    // =============================================================
+    match /results/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (signedIn() && request.resource.data.studentId == request.auth.uid);
+      allow update, delete: if isAdmin();
     }
-    match /testResults/{id} { 
-      allow read, write: if true; 
+    match /testResults/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (signedIn() && request.resource.data.studentId == request.auth.uid);
+      allow update, delete: if isAdmin();
     }
-    match /reports/{id} { 
-      allow read, write: if true; 
+    match /reports/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isAdmin();
     }
 
-    // -------------------------------------------------------------
+    // =============================================================
     // 5. Tasks, Assignments & Homework Submissions
-    // -------------------------------------------------------------
-    match /tasks/{id} { allow read, write: if true; }
-    match /assignments/{id} { allow read, write: if true; }
-    match /task_submissions/{id} { allow read, write: if true; }
-    match /taskSubmissions/{id} { allow read, write: if true; }
-    match /submissions/{id} { allow read, write: if true; }
-    match /assignmentSubmissions/{id} { allow read, write: if true; }
-
-    // -------------------------------------------------------------
-    // 6. Communications, Notices & Alerts
-    // -------------------------------------------------------------
-    match /announcements/{id} { allow read, write: if true; }
-    match /notices/{id} { allow read, write: if true; }
-    match /notifications/{id} { allow read, write: if true; }
-    match /feedback/{id} { allow read, write: if true; }
-
-    // -------------------------------------------------------------
-    // 7. Student Interactive & Personal Data
-    // -------------------------------------------------------------
-    match /attendance/{id} { allow read, write: if true; }
-    match /notes/{id} { allow read, write: if true; }
-    match /student_preferences/{id} { allow read, write: if true; }
-    match /preferences/{id} { allow read, write: if true; }
-    match /documents/{id} { allow read, write: if true; }
-
-    // -------------------------------------------------------------
-    // 8. Storage, Sync & Diagnostics
-    // -------------------------------------------------------------
-    match /mongo_file_chunks/{id} { allow read, write: if true; }
-    match /mongo_sync_queue/{id} { allow read, write: if true; }
-    match /logs/{id} { allow read, write: if true; }
-    match /auditLogs/{id} { allow read, write: if true; }
-
-    // Catch-all fallback for dynamic or nested subcollections
-    match /{document=**} {
-      allow read, write: if true;
+    // =============================================================
+    match /tasks/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
     }
+    match /assignments/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /task_submissions/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (signedIn() && request.resource.data.studentId == request.auth.uid);
+      allow update: if isAdmin() || (
+        signedIn() &&
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.studentId == request.auth.uid &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'grade', 'marks', 'feedback', 'isGraded', 'gradedAt', 'gradedBy'
+        ])
+      );
+      allow delete: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+    }
+    match /taskSubmissions/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (signedIn() && request.resource.data.studentId == request.auth.uid);
+      allow update: if isAdmin() || (
+        signedIn() &&
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.studentId == request.auth.uid &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'grade', 'marks', 'feedback', 'isGraded', 'gradedAt', 'gradedBy'
+        ])
+      );
+      allow delete: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+    }
+    match /submissions/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (signedIn() && request.resource.data.studentId == request.auth.uid);
+      allow update, delete: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+    }
+    match /assignmentSubmissions/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (signedIn() && request.resource.data.studentId == request.auth.uid);
+      allow update, delete: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+    }
+
+    // =============================================================
+    // 6. Communications, Notices & Alerts
+    // =============================================================
+    match /announcements/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /notices/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /notifications/{id} {
+      allow read: if signedIn();
+      allow create: if isAdmin() || (
+        signedIn() &&
+        request.resource.data.recipientRole == 'admin' &&
+        request.resource.data.studentId == request.auth.uid
+      );
+      allow update: if isAdmin() || (
+        signedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'read', 'isRead', 'readAt', 'readBy', 'viewedAt'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+    match /feedback/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if signedIn() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isAdmin() || (
+        signedIn() &&
+        resource.data.studentId == request.auth.uid &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'adminReply', 'reply', 'adminResponse', 'status', 'resolvedAt'
+        ])
+      );
+      allow delete: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+    }
+
+    // =============================================================
+    // 7. Student Interactive & Personal Data
+    // =============================================================
+    match /attendance/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isAdmin();
+    }
+    match /attendance_records/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isAdmin();
+    }
+    match /student_attendance/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isAdmin();
+    }
+    match /notes/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isAdmin() || (signedIn() && request.resource.data.studentId == request.auth.uid);
+      allow update: if isAdmin() || (
+        signedIn() &&
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.studentId == request.auth.uid
+      );
+      allow delete: if isAdmin() || (signedIn() && resource.data.studentId == request.auth.uid);
+    }
+    match /student_preferences/{id} {
+      allow read: if isAdmin() || (signedIn() && (request.auth.uid == id || resource.data.studentId == request.auth.uid));
+      allow write: if isAdmin() || (signedIn() && (request.auth.uid == id || request.resource.data.studentId == request.auth.uid));
+    }
+    match /preferences/{id} {
+      allow read: if isAdmin() || (signedIn() && (request.auth.uid == id || resource.data.studentId == request.auth.uid));
+      allow write: if isAdmin() || (signedIn() && (request.auth.uid == id || request.resource.data.studentId == request.auth.uid));
+    }
+    match /documents/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // =============================================================
+    // 8. Storage, Sync & Diagnostics (Admin only)
+    // =============================================================
+    match /mongo_file_chunks/{id} { allow read, write: if isAdmin(); }
+    match /mongo_sync_queue/{id} { allow read, write: if isAdmin(); }
+    match /logs/{id} { allow read, write: if isAdmin(); }
+    match /auditLogs/{id} { allow read, write: if isAdmin(); }
+    match /audit_logs/{id} { allow read, write: if isAdmin(); }
+    match /login_attempts/{id} { allow read, write: if isAdmin(); }
   }
 }

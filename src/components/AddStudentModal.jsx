@@ -88,8 +88,9 @@ const AddStudentModal = ({
       setValidationError('Student name is required.');
       return;
     }
-    if (!form.sifNumber.trim() && !form.mobileNumber.trim()) {
-      setValidationError('Either SIF Number or Mobile Number is required for student login.');
+    const cleanMobile = form.mobileNumber.trim().replace(/\D/g, '');
+    if (!cleanMobile || cleanMobile.length !== 10) {
+      setValidationError('A valid 10-digit Registered Mobile Number is required for student login.');
       return;
     }
     if (!form.dob.trim()) {
@@ -102,7 +103,7 @@ const AddStudentModal = ({
       name: form.name.trim(),
       email: form.email.trim(),
       sifNumber: form.sifNumber.trim().toUpperCase(),
-      mobileNumber: form.mobileNumber.trim().replace(/\D/g, ''),
+      mobileNumber: cleanMobile,
       rollNumber: form.rollNumber.trim(),
       dob: normalizeDob(form.dob) || form.dob.trim(),
       class: form.departmentName,
@@ -123,7 +124,7 @@ const AddStudentModal = ({
       subtitle={
         isEdit
           ? 'Update student academic details and credentials'
-          : 'Register a student for instant student portal login with SIF/Mobile & DOB'
+          : 'Register a student for student portal login with Registered Mobile Number & DOB'
       }
       icon={isEdit ? UserCheck : UserPlus}
       iconVariant="primary"

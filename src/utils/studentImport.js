@@ -70,7 +70,7 @@ export const normalizeDob = (value) => {
     return `${y}-${m}-${d}`;
   }
 
-  return str;
+  return '';
 };
 
 /**
@@ -91,11 +91,14 @@ export const formatDisplayDob = (dobStr) => {
 export const normalizeMobile = (value) => {
   if (!value) return '';
   const digits = String(value).replace(/\D/g, '');
+  if (digits.length > 10 && (digits.startsWith('91') || digits.startsWith('0'))) {
+    return digits.startsWith('91') ? digits.slice(2, 12) : digits.slice(-10);
+  }
   return digits.length > 10 ? digits.slice(-10) : digits;
 };
 
 /**
- * Normalizes SIF Number (uppercase, trimmed)
+ * Normalizes SIF Number (uppercase, trimmed) - Preserved for existing academic records
  */
 export const normalizeSif = (value) => {
   if (!value) return '';
@@ -120,11 +123,11 @@ export const normalizeName = (value) => {
 
 /**
  * Column header synonym map for auto-detection
+ * SIF Number has been completely removed from import mapping.
  */
 const HEADER_ALIASES = {
   name: ['student name', 'name', 'studentname', 'student_name', 'பெயர்', 'மாணவர் பெயர்', 'student'],
   rollNumber: ['roll number', 'roll no', 'rollno', 'roll_no', 'roll', 'reg no', 'reg_no', 'register number', 'registerno', 'பதிவு எண்', 'regno'],
-  sifNumber: ['sif number', 'sif no', 'sifno', 'sif_number', 'sif', 'sifnum', 'sifid', 'sif_id'],
   dob: ['date of birth', 'dob', 'birth date', 'birthdate', 'date_of_birth', 'பிறந்த தேதி', 'birth_date'],
   mobileNumber: ['mobile number', 'mobile no', 'mobileno', 'mobile_number', 'mobile', 'phone', 'phone number', 'phoneno', 'contact', 'contact no', 'கைபேசி எண்', 'phone_number']
 };
@@ -143,6 +146,7 @@ const findFieldKey = (rawHeader) => {
 
 /**
  * Parses an Excel or CSV file buffer into normalized student records
+ * Supports the 4-column format: Student Name, Roll Number, Date of Birth, Mobile Number.
  */
 export const parseStudentExcel = async (file) => {
   const data = await file.arrayBuffer();
@@ -187,13 +191,26 @@ export const parseStudentExcel = async (file) => {
 
   if (headerRowIndex === -1) {
     throw new Error(
-      'Could not detect student columns. Please ensure headers include: Student Name, Roll Number, SIF Number, Date of Birth, Mobile Number.'
+      'Could not detect student columns. Please ensure headers include: Student Name, Roll Number, Date of Birth, Mobile Number.'
     );
+  }
+
+  // Check required columns mapped
+  const mappedKeys = new Set(Object.values(fieldMapping));
+  const missingCols = [];
+  if (!mappedKeys.has('name')) missingCols.push('Student Name');
+  if (!mappedKeys.has('rollNumber')) missingCols.push('Roll Number');
+  if (!mappedKeys.has('dob')) missingCols.push('Date of Birth');
+  if (!mappedKeys.has('mobileNumber')) missingCols.push('Mobile Number');
+
+  if (missingCols.length > 0) {
+    throw new Error(`Missing required column(s): ${missingCols.join(', ')}. Expected: Student Name, Roll Number, Date of Birth, Mobile Number.`);
   }
 
   // Parse data rows
   const students = [];
   const errors = [];
+  const todayIso = new Date().toISOString().split('T')[0];
 
   for (let r = headerRowIndex + 1; r < rawRows.length; r++) {
     const row = rawRows[r];
@@ -209,16 +226,16 @@ export const parseStudentExcel = async (file) => {
 
     const name = normalizeName(rawStudent.name);
     const rollNumber = normalizeRoll(rawStudent.rollNumber);
-    const sifNumber = normalizeSif(rawStudent.sifNumber);
     const dob = normalizeDob(rawStudent.dob);
     const mobileNumber = normalizeMobile(rawStudent.mobileNumber);
 
     const rowErrors = [];
-    if (!name) rowErrors.push('Missing Name');
-    if (!sifNumber) rowErrors.push('Missing SIF Number');
+    if (!name) rowErrors.push('Missing Student Name');
+    if (!rollNumber) rowErrors.push('Missing Roll Number');
     if (!dob) rowErrors.push('Missing Date of Birth');
+    else if (dob > todayIso) rowErrors.push('Date of Birth cannot be in the future');
     if (!mobileNumber) rowErrors.push('Missing Mobile Number');
-    if (mobileNumber && mobileNumber.length !== 10) rowErrors.push('Mobile must be 10 digits');
+    else if (mobileNumber.length !== 10) rowErrors.push('Mobile Number must be 10 digits');
 
     const isValid = rowErrors.length === 0;
 
@@ -226,7 +243,6 @@ export const parseStudentExcel = async (file) => {
       rowIndex: r + 1,
       name,
       rollNumber,
-      sifNumber,
       dob,
       mobileNumber,
       isValid,
@@ -238,19 +254,27 @@ export const parseStudentExcel = async (file) => {
     }
   }
 
-  const seenSif = new Set();
+  // Duplicate checks within file: Roll Number and Mobile Number
+  const seenRoll = new Set();
   const seenMobile = new Set();
+
   students.forEach((student) => {
     if (!student.isValid) return;
-    const duplicate = (student.sifNumber && seenSif.has(student.sifNumber)) ||
-      (student.mobileNumber && seenMobile.has(student.mobileNumber));
-    if (duplicate) {
+
+    const duplicateRoll = student.rollNumber && seenRoll.has(student.rollNumber);
+    const duplicateMobile = student.mobileNumber && seenMobile.has(student.mobileNumber);
+
+    if (duplicateRoll || duplicateMobile) {
       student.isValid = false;
-      student.errors.push('Duplicate SIF or Mobile Number in this file');
-      errors.push(`Row ${student.rowIndex}: Duplicate SIF or Mobile Number in this file`);
+      const dupErrors = [];
+      if (duplicateRoll) dupErrors.push(`Duplicate Roll Number (${student.rollNumber}) in this file`);
+      if (duplicateMobile) dupErrors.push(`Duplicate Mobile Number (${student.mobileNumber}) in this file`);
+      student.errors.push(...dupErrors);
+      errors.push(`Row ${student.rowIndex}: ${dupErrors.join(', ')}`);
       return;
     }
-    if (student.sifNumber) seenSif.add(student.sifNumber);
+
+    if (student.rollNumber) seenRoll.add(student.rollNumber);
     if (student.mobileNumber) seenMobile.add(student.mobileNumber);
   });
 
@@ -264,40 +288,39 @@ export const parseStudentExcel = async (file) => {
 };
 
 /**
- * Generates and downloads a pre-formatted sample Excel template for students
+ * Generates and downloads the pre-formatted 4-column sample Excel template
+ * Format: Student Name, Roll Number, Date of Birth, Mobile Number
  */
 export const downloadSampleStudentTemplate = () => {
   const sampleData = [
     {
       'Student Name': 'Aravindh K',
       'Roll Number': '24TAM001',
-      'SIF Number': 'SIF1001',
       'Date of Birth': '2005-08-15',
       'Mobile Number': '9876543210'
     },
     {
       'Student Name': 'Kavitha S',
       'Roll Number': '24TAM002',
-      'SIF Number': 'SIF1002',
       'Date of Birth': '2005-11-22',
       'Mobile Number': '9876543211'
     },
     {
       'Student Name': 'Manojkumar M',
       'Roll Number': '24TAM003',
-      'SIF Number': 'SIF1003',
       'Date of Birth': '2006-01-10',
       'Mobile Number': '9876543212'
     }
   ];
 
-  const worksheet = XLSX.utils.json_to_sheet(sampleData);
+  const worksheet = XLSX.utils.json_to_sheet(sampleData, {
+    header: ['Student Name', 'Roll Number', 'Date of Birth', 'Mobile Number']
+  });
 
-  // Set nice column widths
+  // Set column widths matching content
   worksheet['!cols'] = [
     { wch: 22 }, // Student Name
-    { wch: 16 }, // Roll Number
-    { wch: 16 }, // SIF Number
+    { wch: 18 }, // Roll Number
     { wch: 16 }, // Date of Birth
     { wch: 18 }  // Mobile Number
   ];

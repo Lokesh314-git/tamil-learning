@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "deploy:functions": "npx firebase-tools deploy --only functions --project tamil-learning-2d773",
+    "deploy:functions": "npx firebase-tools deploy --only functions --project tamil-learning-9f609",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },

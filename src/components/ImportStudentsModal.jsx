@@ -146,7 +146,6 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
             name: student.name,
             rollNumber: student.rollNumber,
             registerNumber: student.rollNumber, // keep backward-compatible
-            sifNumber: student.sifNumber,
             dob: student.dob,
             mobileNumber: student.mobileNumber,
             year,
@@ -194,7 +193,7 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
       open={open}
       onClose={onClose}
       title="Import Students from Excel"
-      subtitle="Batch create student accounts with SIF, DOB, Year, Class & Section"
+      subtitle="Batch create student accounts with Student Name, Roll Number, Date of Birth & Mobile Number"
       icon={FileSpreadsheet}
       iconVariant="primary"
       size="xl"
@@ -367,7 +366,7 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
                   Supports .xlsx, .xls, and .csv files
                 </p>
                 <p style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-                  Required Columns: <strong>Student Name</strong>, <strong>Roll Number</strong>, <strong>SIF Number</strong>, <strong>Date of Birth</strong>, <strong>Mobile Number</strong>
+                  Required Columns: <strong>Student Name</strong>, <strong>Roll Number</strong>, <strong>Date of Birth</strong>, <strong>Mobile Number</strong>
                 </p>
               </div>
 
@@ -405,11 +404,16 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
                   <div>
                     <span style={{ fontWeight: 600, fontSize: 14 }}>{file?.name}</span>
                     <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                      Total rows: <strong>{parsedData.totalRows}</strong> | Ready to import:{' '}
+                      Total records: <strong>{parsedData.totalRows}</strong> &bull; Valid:{' '}
                       <strong style={{ color: '#10b981' }}>{parsedData.validRows}</strong>
+                      {parsedData.students.filter((s) => s.errors.some((e) => e.includes('Duplicate'))).length > 0 && (
+                        <span style={{ color: '#f59e0b', marginLeft: 8 }}>
+                          &bull; Duplicates: <strong>{parsedData.students.filter((s) => s.errors.some((e) => e.includes('Duplicate'))).length}</strong>
+                        </span>
+                      )}
                       {parsedData.invalidRows > 0 && (
                         <span style={{ color: '#ef4444', marginLeft: 8 }}>
-                          | Issues: <strong>{parsedData.invalidRows}</strong>
+                          &bull; Invalid: <strong>{parsedData.invalidRows}</strong>
                         </span>
                       )}
                     </div>
@@ -438,31 +442,29 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
                     color: '#b91c1c'
                   }}
                 >
-                  <strong>Note:</strong> {parsedData.invalidRows} row(s) have missing required fields and will be skipped. Only valid rows will be imported.
+                  <strong>Note:</strong> {parsedData.invalidRows} row(s) contain validation issues or duplicate values and will be skipped. Only valid rows will be imported.
                 </div>
               )}
 
-              {/* Table Preview (first 6 rows) */}
-              <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
-                <table className="table" style={{ fontSize: 12, margin: 0 }}>
+              {/* Table Preview (Student Name | Roll Number | Date of Birth | Mobile Number | Import Status) */}
+              <div style={{ maxHeight: 260, overflowX: 'auto', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+                <table className="table" style={{ fontSize: 12, margin: 0, width: '100%', minWidth: 480 }}>
                   <thead>
                     <tr>
                       <th style={{ width: 45 }}>#</th>
                       <th>Student Name</th>
-                      <th>Roll No</th>
-                      <th>SIF Number</th>
+                      <th>Roll Number</th>
                       <th>Date of Birth</th>
                       <th>Mobile Number</th>
-                      <th style={{ width: 80 }}>Status</th>
+                      <th style={{ width: 110 }}>Import Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {parsedData.students.slice(0, 10).map((s, idx) => (
-                      <tr key={idx} style={{ opacity: s.isValid ? 1 : 0.6 }}>
+                      <tr key={idx} style={{ opacity: s.isValid ? 1 : 0.65 }}>
                         <td>{s.rowIndex}</td>
                         <td style={{ fontWeight: 600 }}>{s.name || '-'}</td>
-                        <td>{s.rollNumber || '-'}</td>
-                        <td><span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{s.sifNumber || '-'}</span></td>
+                        <td style={{ fontWeight: 500 }}>{s.rollNumber || '-'}</td>
                         <td>{formatDisplayDob(s.dob)}</td>
                         <td>{s.mobileNumber || '-'}</td>
                         <td>
@@ -470,7 +472,7 @@ const ImportStudentsModal = ({ open, onClose, departments = [], onImportSuccess 
                             <span className="pill success" style={{ fontSize: 10, padding: '2px 6px' }}>Valid</span>
                           ) : (
                             <span className="pill error" style={{ fontSize: 10, padding: '2px 6px' }} title={s.errors.join(', ')}>
-                              Invalid
+                              {s.errors.some((e) => e.includes('Duplicate')) ? 'Duplicate' : 'Invalid'}
                             </span>
                           )}
                         </td>

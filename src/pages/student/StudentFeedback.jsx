@@ -5,6 +5,8 @@ import {
   onSnapshot,
   addDoc,
   serverTimestamp,
+  query,
+  where,
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
@@ -59,16 +61,10 @@ const StudentFeedback = () => {
     }
 
     setLoading(true);
-    // Listen to real-time feedback updates and match by student identity
-    const unsub = onSnapshot(collection(db, 'feedback'), (snap) => {
-      const allFeedback = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      const myFeedback = allFeedback.filter((f) => {
-        if (studentUid && (f.studentId === studentUid || f.userId === studentUid)) return true;
-        if (studentEmail && f.email && String(f.email).toLowerCase() === String(studentEmail).toLowerCase()) return true;
-        if (sifNumber && (f.sifNumber === sifNumber || f.studentRoll === sifNumber)) return true;
-        if (f.studentName && profile?.name && String(f.studentName).toLowerCase() === String(profile.name).toLowerCase() && f.year === (year || profile?.year)) return true;
-        return false;
-      });
+    // Listen to real-time feedback updates strictly scoped to current authenticated student
+    const qFeedback = query(collection(db, 'feedback'), where('studentId', '==', studentUid));
+    const unsub = onSnapshot(qFeedback, (snap) => {
+      const myFeedback = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
       myFeedback.sort((a, b) => {
         const timeA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.timestamp ? new Date(a.timestamp).getTime() : 0);

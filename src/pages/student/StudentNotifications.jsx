@@ -65,12 +65,8 @@ const StudentNotifications = () => {
       setNotifications(list);
       setLoading(false);
 
-      // Automatically mark fetched notifications as read on view so badge stays 0 next time
-      if (list.length > 0) {
-        const ids = list.map((n) => n.id);
-        ids.forEach((id) => markItemAsRead && markItemAsRead(id));
-        if (markSectionAsSeen) markSectionAsSeen('notifications');
-        studentMongoApi.updatePreferences({ readNotificationIds: ids }).catch(() => {});
+      if (markSectionAsSeen) {
+        markSectionAsSeen('notifications');
       }
     }, (err) => {
       console.warn('Notifications listener err:', err);

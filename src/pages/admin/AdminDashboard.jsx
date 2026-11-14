@@ -44,36 +44,32 @@ const AdminDashboard = () => {
       if (initialCount >= 7) setLoading(false);
     };
 
-    // 1. Admin doc check
+    // 1. Root Admin doc bootstrap (strictly guarded to ROOT_ADMIN_EMAIL)
     const initAdminDoc = async () => {
       try {
         const currentUser = auth.currentUser;
-        if (currentUser?.email) {
-          const isRootCurrentAdmin = currentUser.email.toLowerCase() === ROOT_ADMIN_EMAIL.toLowerCase();
-          const adminRef = doc(db, 'users', currentUser.uid);
-          const adminSnap = await getDoc(adminRef);
+        if (!currentUser?.email) return;
 
-          if (!adminSnap.exists()) {
-            await setDoc(adminRef, {
-              email: currentUser.email,
-              name: currentUser.displayName || 'Administrator',
-              role: 'admin',
-              approved: true,
-              isRootAdmin: isRootCurrentAdmin,
-              status: 'active',
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          } else if (adminSnap.data().role !== 'admin' || adminSnap.data().isRootAdmin !== isRootCurrentAdmin) {
-            await setDoc(
-              adminRef,
-              { role: 'admin', status: 'active', approved: true, isRootAdmin: isRootCurrentAdmin, updatedAt: serverTimestamp() },
-              { merge: true }
-            );
-          }
+        const isRootCurrentAdmin = currentUser.email.toLowerCase() === ROOT_ADMIN_EMAIL.toLowerCase();
+        if (!isRootCurrentAdmin) return;
+
+        const adminRef = doc(db, 'users', currentUser.uid);
+        const adminSnap = await getDoc(adminRef);
+
+        if (!adminSnap.exists()) {
+          await setDoc(adminRef, {
+            email: currentUser.email,
+            name: currentUser.displayName || 'Administrator',
+            role: 'admin',
+            approved: true,
+            isRootAdmin: true,
+            status: 'active',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
         }
       } catch (e) {
-        console.warn('Admin doc check skipped:', e);
+        console.warn('Admin bootstrap check skipped:', e);
       }
     };
     initAdminDoc();

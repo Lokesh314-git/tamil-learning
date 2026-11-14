@@ -8,7 +8,8 @@ import {
   serverTimestamp,
   where
 } from 'firebase/firestore';
-import { db } from '../../firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../../firebase';
 import { YEARS } from '../../utils/departments';
 import Loader from '../../components/Loader';
 import EmptyState from '../../components/EmptyState';
@@ -44,7 +45,10 @@ const AdminNotificationsPage = () => {
   const [targetDeptId, setTargetDeptId] = useState('all');
   const [targetSection, setTargetSection] = useState('all');
   const [targetStudentId, setTargetStudentId] = useState('');
+  const [isScheduled, setIsScheduled] = useState(false);
+  const [scheduledDateTime, setScheduledDateTime] = useState('');
   const [sending, setSending] = useState(false);
+  const [checkingQueue, setCheckingQueue] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -143,15 +147,16 @@ const AdminNotificationsPage = () => {
         targetUserId: targetScope === 'individual' ? targetStudentId : 'all',
         studentId: targetScope === 'individual' ? targetStudentId : 'all',
         recipientRole: 'student',
+        isScheduled: Boolean(isScheduled && scheduledDateTime),
+        scheduledFor: (isScheduled && scheduledDateTime) ? new Date(scheduledDateTime).toISOString() : null,
+        status: (isScheduled && scheduledDateTime) ? 'scheduled' : 'sent',
         read: false,
         isRead: false,
         createdAt: serverTimestamp(),
+        sentAt: (isScheduled && scheduledDateTime) ? null : serverTimestamp(),
       };
 
-      await Promise.race([
-        addDoc(collection(db, 'notifications'), payload),
-        new Promise((resolve) => setTimeout(resolve, 2500))
-      ]);
+      await addDoc(collection(db, 'notifications'), payload);
 
       const targetDesc = targetScope === 'all'
         ? 'All Students'
@@ -161,13 +166,33 @@ const AdminNotificationsPage = () => {
                 ? `${targetDepartmentName} (${targetSection !== 'all' ? `Sec ${targetSection}` : 'All Sections'})`
                 : `${studentName || 'Student'}`));
 
-      setMessage(`Notification dispatched to ${targetDesc} successfully!`);
+      setMessage((isScheduled && scheduledDateTime)
+        ? `Notification successfully scheduled for ${new Date(scheduledDateTime).toLocaleString()} (${targetDesc})!`
+        : `Notification dispatched to ${targetDesc} successfully!`);
       setTitle('');
       setBody('');
+      setIsScheduled(false);
+      setScheduledDateTime('');
     } catch (err) {
       setError(err.message || 'Failed to dispatch notification.');
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleProcessScheduledQueue = async () => {
+    setCheckingQueue(true);
+    setMessage('');
+    setError('');
+    try {
+      const checkFn = httpsCallable(functions, 'checkAndDeliverScheduledNotifications');
+      const res = await checkFn();
+      const count = res.data?.deliveredCount || 0;
+      setMessage(`Scheduled delivery check completed. ${count} due notification(s) delivered.`);
+    } catch (err) {
+      setError(err?.message || 'Failed to process scheduled notifications.');
+    } finally {
+      setCheckingQueue(false);
     }
   };
 
@@ -184,6 +209,16 @@ const AdminNotificationsPage = () => {
             Send real-time instant notifications to students (All Students, Specific Class, Section, or Individual).
           </p>
         </div>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={handleProcessScheduledQueue}
+          disabled={checkingQueue}
+          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+        >
+          <Clock size={15} />
+          <span>{checkingQueue ? 'Checking...' : 'Deliver Scheduled Queue Now'}</span>
+        </button>
       </div>
 
       {message && <div className="alert success">{message}</div>}
@@ -307,9 +342,35 @@ const AdminNotificationsPage = () => {
               />
             </div>
 
+            <div style={{ background: '#f8fafc', padding: '12px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={isScheduled}
+                  onChange={(e) => setIsScheduled(e.target.checked)}
+                />
+                <span>Schedule for Future Delivery</span>
+              </label>
+              {isScheduled && (
+                <div style={{ marginTop: 10 }}>
+                  <label className="form-label" style={{ fontSize: 12, fontWeight: 600 }}>Delivery Date & Time</label>
+                  <input
+                    type="datetime-local"
+                    className="input"
+                    value={scheduledDateTime}
+                    onChange={(e) => setScheduledDateTime(e.target.value)}
+                    required={isScheduled}
+                  />
+                  <span className="form-hint" style={{ fontSize: 11, marginTop: 4 }}>
+                    Automated background scheduler will dispatch FCM push when this time arrives.
+                  </span>
+                </div>
+              )}
+            </div>
+
             <button type="submit" className="btn btn-primary" style={{ marginTop: 8 }} disabled={sending}>
               <Send size={15} />
-              <span>{sending ? 'Broadcasting...' : 'Send Push Notification'}</span>
+              <span>{sending ? 'Broadcasting...' : (isScheduled ? 'Schedule Notification' : 'Send Push Notification')}</span>
             </button>
           </form>
         </div>

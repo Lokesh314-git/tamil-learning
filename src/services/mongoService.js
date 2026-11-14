@@ -1,6 +1,6 @@
 import { MONGO_CONFIG } from '../config/mongoConfig';
 import { auth, db, functions } from '../firebase';
-import { collection, getDocs, doc, setDoc, updateDoc, serverTimestamp, query, where, writeBatch, deleteDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, updateDoc, serverTimestamp, query, where, writeBatch } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 
 const getBearerHeaders = async () => {

@@ -37,6 +37,21 @@ const StudentLayout = () => {
   }, [location.pathname, isDesktop]);
 
   useEffect(() => {
+    const shouldLock = !isDesktop && sidebarOpen;
+    document.body.style.overflow = shouldLock ? 'hidden' : '';
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && !isDesktop && sidebarOpen) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = '';
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [sidebarOpen, isDesktop]);
+
+  useEffect(() => {
     const assignedYear = profile?.year;
     if (!assignedYear) return;
     if (year && year !== selectedYear) setSelectedYear(year);
