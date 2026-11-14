@@ -65,6 +65,76 @@ export const clearStudentSession = () => {
 };
 
 /**
+ * Accurately classifies backend error responses into structured frontend messages
+ * according to Phase 3 requirements.
+ */
+export function classifyLoginError(err) {
+  const code = err?.code || '';
+  const msg = err?.message || '';
+
+  const classified = new Error();
+  classified.isClassified = true;
+
+  if (code === 'unauthenticated') {
+    classified.message = 'Invalid mobile number or date of birth.';
+    classified.code = 'invalid-credentials';
+  } else if (code === 'permission-denied') {
+    classified.message = msg.includes('inactive') || msg.includes('blocked')
+      ? msg
+      : 'Account inactive. Contact administrator.';
+    classified.code = 'account-inactive';
+  } else if (code === 'failed-precondition') {
+    classified.message = msg || 'Account verification required; contact administrator.';
+    classified.code = 'duplicate-mobile';
+  } else if (code === 'resource-exhausted') {
+    classified.message = 'Too many sign-in attempts. Please try again in 15 minutes.';
+    classified.code = 'rate-limited';
+  } else if (code === 'invalid-argument') {
+    classified.message = msg || 'Please enter a valid 10-digit registered mobile number and date of birth.';
+    classified.code = 'invalid-input';
+  } else if (!navigator.onLine) {
+    classified.message = 'Unable to connect. Please try again.';
+    classified.code = 'network-unavailable';
+  } else {
+    classified.message = 'Login service is temporarily unavailable. Please try again.';
+    classified.code = 'backend-unavailable';
+  }
+
+  return classified;
+}
+
+export function classifyHttpLoginError(status, serverMessage) {
+  const classified = new Error();
+  classified.isClassified = true;
+  classified.status = status;
+
+  if (status === 401) {
+    classified.message = 'Invalid mobile number or date of birth.';
+    classified.code = 'invalid-credentials';
+  } else if (status === 403) {
+    classified.message = serverMessage || 'Account inactive. Contact administrator.';
+    classified.code = 'account-inactive';
+  } else if (status === 409) {
+    classified.message = serverMessage || 'Account verification required; contact administrator.';
+    classified.code = 'duplicate-mobile';
+  } else if (status === 429) {
+    classified.message = serverMessage || 'Too many sign-in attempts. Please try again in 15 minutes.';
+    classified.code = 'rate-limited';
+  } else if (status === 400) {
+    classified.message = serverMessage || 'Please enter a valid 10-digit registered mobile number and date of birth.';
+    classified.code = 'invalid-input';
+  } else if (!navigator.onLine) {
+    classified.message = 'Unable to connect. Please try again.';
+    classified.code = 'network-unavailable';
+  } else {
+    classified.message = 'Login service is temporarily unavailable. Please try again.';
+    classified.code = 'backend-unavailable';
+  }
+
+  return classified;
+}
+
+/**
  * Direct Client-Side Firestore Student Authentication and Services
  * 100% compatible with Firebase Spark (Free Tier) plan - No Cloud Functions required.
  */
@@ -77,12 +147,14 @@ export const studentMongoApi = {
     if (!cleanMobile || cleanMobile.length !== 10) {
       const error = new Error('Please enter a valid 10-digit registered mobile number.');
       error.status = 400;
+      error.code = 'invalid-argument';
       throw error;
     }
 
     if (!cleanDob) {
       const error = new Error('Please enter a valid Date of Birth.');
       error.status = 400;
+      error.code = 'invalid-argument';
       throw error;
     }
 
@@ -105,11 +177,11 @@ export const studentMongoApi = {
         return { ...student, customToken };
       }
     } catch (callableErr) {
-      console.warn('[studentMongoApi] Callable studentLogin attempt notice:', callableErr.message);
-      if (callableErr.code === 'unauthenticated' || callableErr.code === 'permission-denied' || callableErr.code === 'resource-exhausted') {
-        const err = new Error(callableErr.message || 'Invalid mobile number or date of birth.');
-        err.status = 401;
-        throw err;
+      console.warn('[studentMongoApi] Callable studentLogin attempt notice:', callableErr.code, callableErr.message);
+      // If the error was explicitly returned by the backend with user-specific validation
+      // (wrong credentials, inactive, duplicate, etc.), do NOT fall back to HTTP, throw immediately!
+      if (['unauthenticated', 'permission-denied', 'failed-precondition', 'resource-exhausted', 'invalid-argument'].includes(callableErr.code)) {
+        throw classifyLoginError(callableErr);
       }
     }
 
@@ -135,18 +207,24 @@ export const studentMongoApi = {
           localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
           return { ...student, customToken: data.customToken };
         }
-      } else if (res.status === 401 || res.status === 429) {
+      } else {
         const errData = await res.json().catch(() => ({}));
-        const err = new Error(errData.error || 'Invalid mobile number or date of birth.');
-        err.status = res.status;
-        throw err;
+        throw classifyHttpLoginError(res.status, errData.error);
       }
     } catch (fetchErr) {
-      if (fetchErr.status === 401 || fetchErr.status === 429) throw fetchErr;
+      if (fetchErr.isClassified) throw fetchErr;
       console.warn('[studentMongoApi] HTTP login fallback notice:', fetchErr.message);
     }
 
-    throw new Error('Invalid mobile number or date of birth.');
+    // 3. Network or Backend Unavailable (never falsify credentials error)
+    if (!navigator.onLine) {
+      const netErr = new Error('Unable to connect. Please try again.');
+      netErr.code = 'network-unavailable';
+      throw netErr;
+    }
+    const serviceErr = new Error('Login service is temporarily unavailable. Please try again.');
+    serviceErr.code = 'backend-unavailable';
+    throw serviceErr;
   },
 
   async me() {

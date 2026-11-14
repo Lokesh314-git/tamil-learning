@@ -1,8 +1,8 @@
 {
   "name": "tamil-learning-functions",
   "scripts": {
-    "deploy": "npx firebase-tools deploy --only functions --config ../firebase.json --project tamil-learning-2d773",
-    "serve": "npx firebase-tools emulators:start --only functions --config ../firebase.json --project tamil-learning-2d773"
+    "deploy": "npx firebase-tools deploy --only functions --config ../firebase.json --project tamil-learning-9f609",
+    "serve": "npx firebase-tools emulators:start --only functions --config ../firebase.json --project tamil-learning-9f609"
   },
   "engines": {
     "node": "18"

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import logoImg from '../../assets/logo.png';
 
 const StudentLogin = () => {
   const { loginStudentWithCredentials } = useAuth();
@@ -85,7 +86,7 @@ const StudentLogin = () => {
       <div className="auth-card">
         <div className="auth-logo">
           <div className="auth-logo-mark" style={{ background: '#fff', padding: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <img src="/logo.png" alt="Tamil Learning Logo" style={{ width: 34, height: 34, objectFit: 'contain' }} />
+            <img src={logoImg} alt="Tamil Learning Logo" style={{ width: 34, height: 34, objectFit: 'contain' }} />
           </div>
           <div>
             <div className="auth-logo-text">Tamil Learning</div>
