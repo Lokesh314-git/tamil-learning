@@ -11,7 +11,15 @@
 
 A comprehensive source code audit and security overhaul was conducted across the entire Tamil Learning application (React 18 + Vite frontend, Firebase Authentication, Cloud Firestore, Cloud Functions v2, MongoDB Atlas / GridFS, and Service Worker PWA).
 
-All identified architectural vulnerabilities, data leakage risks, role escalation loopholes, performance bottlenecks, and the requested **Transition from SIF Login to Registered Mobile Number + Date of Birth Login** have been implemented without altering the application's visual design language, deleting existing data, or breaking established student workflows.
+All identified architectural vulnerabilities, data leakage risks, role escalation loopholes, performance bottlenecks, the **Transition from SIF Login to Registered Mobile Number + Date of Birth Login**, and the **Complete Decoupling of MongoDB from Student Authentication** have been implemented without altering the application's visual design language, deleting existing data, or breaking established student workflows.
+
+### Recent Hardening: Complete Decoupling of MongoDB from Authentication
+1. **Firestore as Single Source of Truth:** Student records in Firestore `users/{studentId}` are the exclusive data store for student credentials and authentication.
+2. **Eliminated MongoDB Fallback:** Removed MongoDB collection querying and profile synchronization fallbacks from `functions/index.js` (`studentLogin`).
+3. **Deprecated MongoDB Auth Endpoint:** `POST /login` in `studentMongoApi` was deprecated and replaced with HTTP 410 Gone. The frontend uses `studentAuthService` calling the Firebase Callable Function exclusively.
+4. **Authentic Firebase Authentication Sessions:** Eliminated all client-side fallback authentication that wrote fake tokens (`session_${studentId}`) to `localStorage`. Students enter the portal solely after genuine verification via `signInWithCustomToken()`.
+5. **Hardened Firestore Security Rules:** Removed `allow read: if true;` on `users/{userId}` and restricted access to `isAdmin() || isOwner(userId)`.
+6. **Removed Automatic Migration on Mount:** Removed the `useEffect` from `StudentsPage.jsx` that automatically triggered `migrateStudentProfilesToMongo`.
 
 ---
 

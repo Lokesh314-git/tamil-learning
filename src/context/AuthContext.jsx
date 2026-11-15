@@ -5,7 +5,7 @@ import { auth, db } from '../firebase';
 import { normalizeEmail } from '../utils/emailValidation';
 import { isDeletedAccount } from '../utils/studentStatus';
 import { ROOT_ADMIN_EMAIL } from '../utils/roles';
-import { clearStudentSession, readStudentSession, studentMongoApi } from '../services/studentMongoApi';
+import { studentAuthService, normalizeMobile } from '../services/studentAuthService';
 
 const AuthContext = createContext();
 
@@ -17,13 +17,6 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     let profileUnsub = null;
     let disposed = false;
-
-    const handleStudentSessionExpired = () => {
-      setUser(null);
-      setProfile(null);
-      setLoading(false);
-    };
-    window.addEventListener('student-session-expired', handleStudentSessionExpired);
 
     const unsubAuth = onAuthStateChanged(auth, (firebaseUser) => {
       profileUnsub?.();
@@ -48,13 +41,8 @@ export const AuthProvider = ({ children }) => {
               setLoading(false);
               return;
             }
-            const session = readStudentSession();
-            if (session?.studentId === firebaseUser.uid && session.student) {
-              setProfile(session.student);
-              setLoading(false);
-              return;
-            }
             await signOut(auth).catch(() => {});
+            setUser(null);
             setProfile(null);
             setLoading(false);
             return;
@@ -66,6 +54,7 @@ export const AuthProvider = ({ children }) => {
 
           if (isDeletedAccount(userProfile)) {
             await signOut(auth).catch(() => {});
+            setUser(null);
             setProfile(null);
             setLoading(false);
             return;
@@ -95,58 +84,29 @@ export const AuthProvider = ({ children }) => {
 
       setUser(null);
       setProfile(null);
-      clearStudentSession();
       setLoading(false);
     });
 
     return () => {
       disposed = true;
-      window.removeEventListener('student-session-expired', handleStudentSessionExpired);
       unsubAuth();
       profileUnsub?.();
     };
   }, []);
 
   const loginAdmin = async ({ email, password }) => {
-    clearStudentSession();
     await signOut(auth).catch(() => {});
     const cleanEmail = normalizeEmail(email);
 
     // 1. Authenticate with Firebase Authentication
+    const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+    let snapshot;
     try {
-      const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
-      let snapshot;
-      try {
-        snapshot = await getDoc(doc(db, 'users', credential.user.uid));
-      } catch (firestoreErr) {
-        if (firestoreErr.code === 'permission-denied') {
-          // If this is the designated root admin whose email was verified by Firebase Auth,
-          // grant immediate admin access even if Firestore rules have not finished propagating.
-          if (cleanEmail === ROOT_ADMIN_EMAIL) {
-            const adminDoc = {
-              uid: credential.user.uid,
-              id: credential.user.uid,
-              email: cleanEmail,
-              name: 'Administrator',
-              role: 'admin',
-              isRootAdmin: true,
-              createdAt: new Date().toISOString()
-            };
-            setUser(credential.user);
-            setProfile(adminDoc);
-            // Attempt to persist the profile in the background
-            setDoc(doc(db, 'users', credential.user.uid), adminDoc).catch(() => {});
-            return adminDoc;
-          }
-          const err = new Error('Firestore denied access to your admin profile. Ask the project owner to check Firestore rules for your account.');
-          err.code = 'admin-profile-permission-denied';
-          throw err;
-        }
-        throw firestoreErr;
-      }
-
-      if (!snapshot.exists()) {
-        // Auto-seed root admin profile in Firestore if this is the primary root admin
+      snapshot = await getDoc(doc(db, 'users', credential.user.uid));
+    } catch (firestoreErr) {
+      if (firestoreErr.code === 'permission-denied') {
+        // If this is the designated root admin whose email was verified by Firebase Auth,
+        // grant immediate admin access even if Firestore rules have not finished propagating.
         if (cleanEmail === ROOT_ADMIN_EMAIL) {
           const adminDoc = {
             uid: credential.user.uid,
@@ -157,98 +117,107 @@ export const AuthProvider = ({ children }) => {
             isRootAdmin: true,
             createdAt: new Date().toISOString()
           };
-          try {
-            await setDoc(doc(db, 'users', credential.user.uid), adminDoc);
-            setUser(credential.user);
-            setProfile(adminDoc);
-            return adminDoc;
-          } catch (writeErr) {
-            console.warn('Auto-seed root admin write notice:', writeErr);
-          }
+          setUser(credential.user);
+          setProfile(adminDoc);
+          setDoc(doc(db, 'users', credential.user.uid), adminDoc).catch(() => {});
+          return adminDoc;
         }
-
-        await signOut(auth).catch(() => {});
-        const error = new Error('No admin profile found in Firestore for this account.');
-        error.code = 'not-admin';
-        throw error;
+        const err = new Error('Firestore denied access to your admin profile. Ask the project owner to check Firestore rules for your account.');
+        err.code = 'admin-profile-permission-denied';
+        throw err;
       }
-
-      if (snapshot.data().role !== 'admin') {
-        await signOut(auth).catch(() => {});
-        const error = new Error('Only administrator accounts can sign in here.');
-        error.code = 'not-admin';
-        throw error;
-      }
-      const adminProfile = { uid: snapshot.id, id: snapshot.id, ...snapshot.data() };
-      if (isDeletedAccount(adminProfile)) {
-        await signOut(auth);
-        throw new Error('Your account has been deleted by admin.');
-      }
-      setUser(credential.user);
-      setProfile(adminProfile);
-      return adminProfile;
-    } catch (firebaseErr) {
-      // 2. If Firebase Auth password fails, check if this is an admin student logging in via Mobile Number and DOB
-      try {
-        const studentProfile = await studentMongoApi.login({ mobileNumber: email, dob: password });
-        if (studentProfile && studentProfile.role === 'admin') {
-          if (studentProfile.customToken) {
-            await signInWithCustomToken(auth, studentProfile.customToken);
-          }
-          const studentId = studentProfile.uid || studentProfile.id;
-          setUser(auth.currentUser || { uid: studentId, studentId, ...studentProfile });
-          setProfile({ ...studentProfile, id: studentId, uid: studentId, role: 'admin' });
-          return { ...studentProfile, role: 'admin' };
-        } else if (studentProfile) {
-          clearStudentSession();
-          const err = new Error('This account is registered as a student. Admin privileges have not been granted.');
-          err.code = 'not-admin';
-          throw err;
-        }
-      } catch (studentErr) {
-        if (studentErr.code === 'not-admin') throw studentErr;
-        throw firebaseErr;
-      }
-      throw firebaseErr;
+      throw firestoreErr;
     }
+
+    if (!snapshot.exists()) {
+      if (cleanEmail === ROOT_ADMIN_EMAIL) {
+        const adminDoc = {
+          uid: credential.user.uid,
+          id: credential.user.uid,
+          email: cleanEmail,
+          name: 'Administrator',
+          role: 'admin',
+          isRootAdmin: true,
+          createdAt: new Date().toISOString()
+        };
+        try {
+          await setDoc(doc(db, 'users', credential.user.uid), adminDoc);
+          setUser(credential.user);
+          setProfile(adminDoc);
+          return adminDoc;
+        } catch (writeErr) {
+          console.warn('Auto-seed root admin write notice:', writeErr);
+        }
+      }
+
+      await signOut(auth).catch(() => {});
+      const error = new Error('No admin profile found in Firestore for this account.');
+      error.code = 'not-admin';
+      throw error;
+    }
+
+    if (snapshot.data().role !== 'admin') {
+      await signOut(auth).catch(() => {});
+      const error = new Error('Only administrator accounts can sign in here.');
+      error.code = 'not-admin';
+      throw error;
+    }
+    const adminProfile = { uid: snapshot.id, id: snapshot.id, ...snapshot.data() };
+    if (isDeletedAccount(adminProfile)) {
+      await signOut(auth);
+      throw new Error('Your account has been deleted by admin.');
+    }
+    setUser(credential.user);
+    setProfile(adminProfile);
+    return adminProfile;
   };
 
   const loginStudentWithCredentials = async ({ mobileNumber, dob, identifier }) => {
-    clearStudentSession();
     await signOut(auth).catch(() => {});
-    const cleanMobile = String(mobileNumber || identifier || '').trim().replace(/\D/g, '').slice(-10);
-    try {
-      const studentProfile = await studentMongoApi.login({ mobileNumber: cleanMobile, dob });
-      const studentId = studentProfile?.uid || studentProfile?.id;
-      if (!studentId) {
-        clearStudentSession();
-        throw new Error('Invalid mobile number or date of birth.');
-      }
+    const cleanMobile = normalizeMobile(mobileNumber || identifier || '');
 
-      // Authenticate genuinely with Firebase Auth using the server-issued Custom Auth Token
-      if (studentProfile.customToken) {
-        try {
-          const cred = await signInWithCustomToken(auth, studentProfile.customToken);
-          const currentUser = cred.user;
-          const userRole = studentProfile.role === 'admin' ? 'admin' : 'student';
-          setUser(currentUser);
-          setProfile({ ...studentProfile, id: studentId, uid: studentId, role: userRole });
-          setLoading(false);
-          return { ...studentProfile, role: userRole };
-        } catch (authErr) {
-          console.warn('[AuthContext] signInWithCustomToken notice:', authErr.message);
-        }
-      }
+    // 1. Authenticate with Firebase Cloud Function (Backend verification against Firestore)
+    const { customToken, student } = await studentAuthService.loginStudent({
+      mobileNumber: cleanMobile,
+      dob
+    });
 
-      const userRole = studentProfile.role === 'admin' ? 'admin' : 'student';
-      setUser(auth.currentUser || { uid: studentId, studentId, ...studentProfile });
-      setProfile({ ...studentProfile, id: studentId, uid: studentId, role: userRole });
-      setLoading(false);
-      return { ...studentProfile, role: userRole };
-    } catch (error) {
-      clearStudentSession();
-      throw error;
+    if (!customToken) {
+      throw new Error('Authentication token not received from server.');
     }
+
+    // 2. Authenticate genuinely with Firebase Authentication using the Custom Auth Token
+    const userCred = await signInWithCustomToken(auth, customToken);
+    const studentUid = userCred.user.uid;
+
+    // 3. Load verified student profile from Firestore
+    let studentProfile = null;
+    try {
+      const snap = await getDoc(doc(db, 'users', studentUid));
+      if (snap.exists()) {
+        studentProfile = { uid: snap.id, id: snap.id, ...snap.data() };
+      }
+    } catch (readErr) {
+      console.warn('[AuthContext] Firestore profile fetch note:', readErr.message);
+    }
+
+    const finalProfile = studentProfile || {
+      uid: studentUid,
+      id: studentUid,
+      ...student,
+      role: 'student',
+      status: student?.status || 'active'
+    };
+
+    if (isDeletedAccount(finalProfile) || ['deleted', 'blocked', 'rejected', 'inactive'].includes(finalProfile.status)) {
+      await signOut(auth).catch(() => {});
+      throw new Error('Student account is inactive or blocked. Please contact your department admin.');
+    }
+
+    setUser(userCred.user);
+    setProfile(finalProfile);
+    setLoading(false);
+    return finalProfile;
   };
 
   const refreshProfile = useCallback(async () => {
@@ -265,7 +234,6 @@ export const AuthProvider = ({ children }) => {
   }, [profile, user]);
 
   const logout = async () => {
-    clearStudentSession();
     await signOut(auth).catch(() => {});
     setUser(null);
     setProfile(null);

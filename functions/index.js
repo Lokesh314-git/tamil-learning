@@ -531,66 +531,24 @@ exports.studentLogin = onCall({ region: 'us-central1', cors: ALLOWED_ORIGINS }, 
     );
   }
 
-  let matchedDoc = candidates.length === 1 ? candidates[0] : null;
-
-  // 6. MongoDB fallback if Firestore direct query missed
-  if (!matchedDoc) {
-    try {
-      const client = await getMongoClient();
-      const mongoStudents = client.db(MONGO_DB_NAME).collection('students');
-      const mongoMatches = await mongoStudents.find({
-        mobileNumber,
-        isDeleted: { $ne: true },
-        status: { $ne: 'deleted' }
-      }).toArray();
-
-      if (mongoMatches.length > 1) {
-        console.warn(`[studentLogin] Ambiguous duplicate mobile in MongoDB: ${mobileNumber}`);
-        throw new HttpsError(
-          'failed-precondition',
-          'Multiple student accounts are associated with this mobile number. Please contact administration for correction.'
-        );
-      } else if (mongoMatches.length === 1) {
-        const student = mongoMatches[0];
-        const studentUid = String(student.uid || student._id);
-        const docRef = usersRef.doc(studentUid);
-        const existingSnap = await docRef.get();
-        if (!existingSnap.exists) {
-          await docRef.set({
-            ...student,
-            uid: studentUid,
-            role: 'student',
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-          matchedDoc = await docRef.get();
-        } else {
-          matchedDoc = existingSnap;
-        }
-      }
-    } catch (mErr) {
-      if (mErr instanceof HttpsError) throw mErr;
-      console.warn('[studentLogin] MongoDB lookup fallback notice:', mErr.message);
-    }
+  // 6. Verify Record Exists in Firestore
+  if (candidates.length === 0) {
+    throw new HttpsError('unauthenticated', 'Invalid mobile number or date of birth.');
   }
 
-  // 7. Verify Record Exists
-  if (!matchedDoc || !matchedDoc.exists) {
-    throw new HttpsError('unauthenticated', 'Invalid registered mobile number or date of birth.');
-  }
-
+  const matchedDoc = candidates[0];
   const studentData = matchedDoc.data();
   const studentUid = matchedDoc.id;
 
-  // 8. Verify Account Status
+  // 7. Verify Account Status
   if (studentData.isDeleted === true || ['deleted', 'blocked', 'rejected', 'inactive'].includes(studentData.status)) {
     throw new HttpsError('permission-denied', 'Student account is inactive or blocked. Please contact your department admin.');
   }
 
-  // 9. Verify Secure Date of Birth Match
+  // 8. Verify Secure Date of Birth Match
   const storedDob = normalizeDobServer(studentData.dob);
   if (!storedDob || storedDob !== dob) {
-    throw new HttpsError('unauthenticated', 'Invalid registered mobile number or date of birth.');
+    throw new HttpsError('unauthenticated', 'Invalid mobile number or date of birth.');
   }
 
   clearLoginRateLimit(rateLimitKey);
@@ -969,7 +927,7 @@ function studentJwtSecret() {
   return secret;
 }
 
-function signStudentToken(studentId) {
+function _signStudentToken(studentId) {
   const now = Math.floor(Date.now() / 1000);
   const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const unsigned = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ sub: studentId, iat: now, exp: now + 7 * 24 * 60 * 60 })}`;
@@ -1033,75 +991,9 @@ exports.studentMongoApi = onRequest({
     const pathname = new URL(req.url, 'https://student-api.local').pathname.replace(/\/+$/, '') || '/';
 
     if (req.method === 'POST' && pathname === '/login') {
-      const rawMobile = String(req.body?.mobileNumber || req.body?.identifier || '').trim();
-      const rawDob = req.body?.dob;
-      const cleanMobile = rawMobile.replace(/\D/g, '').slice(-10);
-      const dob = normalizeDobServer(rawDob);
-      if (!cleanMobile || cleanMobile.length !== 10 || !dob) {
-        return res.status(400).json({ error: 'Please enter a valid 10-digit registered mobile number and date of birth.' });
-      }
-
-      const clientIp = String(req.headers['x-forwarded-for'] || req.ip || 'unknown').split(',')[0].trim().slice(0, 80);
-      const attemptKey = crypto.createHmac('sha256', studentJwtSecret()).update(`${clientIp}:${cleanMobile}`).digest('hex');
-      const attempts = mongoDb.collection('student_login_attempts');
-      await attempts.createIndex({ lastAttempt: 1 }, { expireAfterSeconds: 900 });
-      const recentAttempts = await attempts.findOne({ _id: attemptKey });
-      const now = new Date();
-      if (recentAttempts?.count >= 10 && now.getTime() - recentAttempts.lastAttempt.getTime() < 15 * 60 * 1000) {
-        return res.status(429).json({ error: 'Too many sign-in attempts. Please try again in 15 minutes.' });
-      }
-      await attempts.updateOne({ _id: attemptKey }, { $inc: { count: 1 }, $set: { lastAttempt: now } }, { upsert: true });
-
-      const matches = await students.find({
-        mobileNumber: cleanMobile,
-        isDeleted: { $ne: true },
-        status: { $ne: 'deleted' }
-      }).toArray();
-
-      if (matches.length > 1) {
-        return res.status(409).json({
-          error: 'Multiple accounts are associated with this mobile number. Please contact administration for correction.'
-        });
-      }
-
-      const student = matches[0];
-      if (!student || normalizeDobServer(student.dob) !== dob) {
-        return res.status(401).json({ error: 'Invalid registered mobile number or date of birth.' });
-      }
-      if (['blocked', 'inactive', 'rejected'].includes(student.status)) {
-        return res.status(403).json({ error: 'Student account is inactive or blocked. Please contact your department admin.' });
-      }
-
-      await attempts.deleteOne({ _id: attemptKey });
-      const studentId = String(student.uid || student._id);
-      const token = signStudentToken(studentId);
-
-      // Issue Firebase Custom Auth Token so student can authenticate with Firebase Auth
-      let customToken = '';
-      try {
-        try {
-          await admin.auth().getUser(studentId);
-        } catch (uErr) {
-          if (uErr.code === 'auth/user-not-found') {
-            await admin.auth().createUser({
-              uid: studentId,
-              displayName: student.name || 'Student',
-              email: student.email && student.email.includes('@') ? student.email : undefined,
-            });
-          }
-        }
-        const customClaims = {
-          role: student.role || 'student',
-          year: student.year || '1st Year',
-          departmentId: student.departmentId || 'all',
-        };
-        await admin.auth().setCustomUserClaims(studentId, customClaims);
-        customToken = await admin.auth().createCustomToken(studentId, customClaims);
-      } catch (tokErr) {
-        console.error('[studentMongoApi] Failed to issue custom token:', tokErr.message);
-      }
-
-      return res.json({ studentId, token, customToken, expiresIn: 604800, student: toApiValue(student) });
+      return res.status(410).json({
+        error: 'Student authentication via MongoDB API has been deprecated and permanently removed. Use the Firebase Callable Function studentLogin.'
+      });
     }
 
     const studentId = tokenStudentId(req);

@@ -47,19 +47,6 @@ const StudentsPage = () => {
 
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  const { user: currentUser } = useAuth();
-
-  useEffect(() => {
-    if (!currentUser?.uid) return;
-    httpsCallable(functions, 'migrateStudentProfilesToMongo')()
-      .then(({ data }) => {
-        if (data?.students) setMessage(`Migrated ${data.students} student profiles to MongoDB.`);
-      })
-      .catch((err) => {
-        console.error('Student MongoDB migration failed:', err);
-        setError(err?.message || 'Could not move existing student records to MongoDB.');
-      });
-  }, [currentUser?.uid]);
 
   const yearOptions = ['All', ...YEARS];
 

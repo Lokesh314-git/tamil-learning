@@ -50,8 +50,8 @@ service cloud.firestore {
     // 1. User Profiles & Accounts (Admins & Students)
     // =============================================================
     match /users/{userId} {
-      // User profiles can be read to authenticate and load profiles
-      allow read: if true;
+      // User profiles can only be read by administrators or the account owner
+      allow read: if isAdmin() || isOwner(userId);
 
       // Only administrators can create or delete user profiles
       allow create, delete: if isAdmin();

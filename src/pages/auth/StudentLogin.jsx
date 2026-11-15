@@ -71,10 +71,13 @@ const StudentLogin = () => {
       navigate('/student/year/' + encodeURIComponent(targetYear) + '/dashboard', { replace: true });
     } catch (err) {
       console.warn('[StudentLogin] Sign in failed:', err.message);
-      setError(
-        err?.message ||
-        'Invalid registered mobile number or date of birth. Please check your credentials or contact administration.'
-      );
+      if (err?.code === 'unauthenticated' || /invalid.*(mobile|date of birth|credential)/i.test(err?.message || '')) {
+        setError('Invalid mobile number or date of birth.');
+      } else if (err?.code === 'unavailable' || err?.code === 'internal' || /unable to connect|network|internet|failed to fetch/i.test(err?.message || '')) {
+        setError('Unable to connect to the authentication service. Please try again shortly.');
+      } else {
+        setError(err?.message || 'Invalid mobile number or date of birth.');
+      }
     } finally {
       setLoading(false);
     }

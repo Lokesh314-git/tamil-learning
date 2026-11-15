@@ -35,9 +35,9 @@ function validateDate(year, month, day) {
 }
 
 /**
- * Backend Auth Engine Evaluator
+ * Backend Auth Engine Evaluator (Firestore-Only Model)
  */
-function evaluateStudentLogin({ mobileNumber, dob }, mockDatabase) {
+function evaluateStudentLogin({ mobileNumber, dob }, mockFirestoreUsers) {
   const cleanMobile = normalizeMobile(mobileNumber);
   if (!cleanMobile || cleanMobile.length !== 10) {
     return { error: 'invalid-argument', message: 'Please enter a valid 10-digit registered mobile number.' };
@@ -53,8 +53,8 @@ function evaluateStudentLogin({ mobileNumber, dob }, mockDatabase) {
     return { error: 'invalid-argument', message: 'Date of Birth cannot be in the future.' };
   }
 
-  // Query database for matching mobile numbers
-  const matchedDocs = mockDatabase.filter((s) => {
+  // Query Firestore users collection for matching mobile numbers
+  const matchedDocs = mockFirestoreUsers.filter((s) => {
     const sMobile = normalizeMobile(s.mobileNumber || s.phone);
     return s.role === 'student' && sMobile === cleanMobile && s.isDeleted !== true && s.status !== 'deleted';
   });
@@ -68,20 +68,20 @@ function evaluateStudentLogin({ mobileNumber, dob }, mockDatabase) {
   }
 
   if (matchedDocs.length === 0) {
-    return { error: 'unauthenticated', message: 'Invalid registered mobile number or date of birth.' };
+    return { error: 'unauthenticated', message: 'Invalid mobile number or date of birth.' };
   }
 
   const student = matchedDocs[0];
 
   // Blocked / inactive checks
-  if (['blocked', 'inactive', 'rejected'].includes(student.status)) {
+  if (student.isDeleted === true || ['blocked', 'inactive', 'rejected', 'deleted'].includes(student.status)) {
     return { error: 'permission-denied', message: 'Student account is inactive or blocked. Please contact your department admin.' };
   }
 
   // DOB Match verification
   const studentDob = normalizeDobServer(student.dob);
   if (!studentDob || studentDob !== normalizedDob) {
-    return { error: 'unauthenticated', message: 'Invalid registered mobile number or date of birth.' };
+    return { error: 'unauthenticated', message: 'Invalid mobile number or date of birth.' };
   }
 
   return {
@@ -99,7 +99,7 @@ function evaluateStudentLogin({ mobileNumber, dob }, mockDatabase) {
   };
 }
 
-// Mock database callset
+// Mock Firestore users dataset
 const mockStudents = [
   { uid: 'student_1', name: 'Aravindh Kumar', mobileNumber: '9876543210', dob: '2004-05-15', sifNumber: 'SIF1001', role: 'student', status: 'active' },
   { uid: 'student_2', name: 'Priya Mani', mobileNumber: '9876543211', dob: '2005-08-20', sifNumber: 'SIF1002', role: 'student', status: 'active' },
@@ -121,13 +121,13 @@ test('1. Correct mobile number + correct DOB', () => {
 test('2. Correct mobile number + incorrect DOB', () => {
   const res = evaluateStudentLogin({ mobileNumber: '9876543210', dob: '2004-05-16' }, mockStudents);
   assert.equal(res.error, 'unauthenticated');
-  assert.equal(res.message, 'Invalid registered mobile number or date of birth.');
+  assert.equal(res.message, 'Invalid mobile number or date of birth.');
 });
 
 test('3. Incorrect mobile number + correct DOB', () => {
   const res = evaluateStudentLogin({ mobileNumber: '9876543290', dob: '2004-05-15' }, mockStudents);
   assert.equal(res.error, 'unauthenticated');
-  assert.equal(res.message, 'Invalid registered mobile number or date of birth.');
+  assert.equal(res.message, 'Invalid mobile number or date of birth.');
 });
 
 test('4. Missing mobile number', () => {
@@ -165,7 +165,7 @@ test('8. Duplicate mobile numbers (multiple active students with same mobile)', 
 test('9. Student with missing DOB in database', () => {
   const res = evaluateStudentLogin({ mobileNumber: '9876543212', dob: '2004-01-01' }, mockStudents);
   assert.equal(res.error, 'unauthenticated');
-  assert.equal(res.message, 'Invalid registered mobile number or date of birth.');
+  assert.equal(res.message, 'Invalid mobile number or date of birth.');
 });
 
 test('10. Blocked student rejection', () => {
@@ -185,69 +185,36 @@ test('12. Unauthorized user / non-student', () => {
   assert.equal(res.error, 'unauthenticated'); // Student login rejects non-students
 });
 
-test('13. Session persistence after refresh simulation', () => {
-  const fakeSessionStorage = {};
+test('13. Authenticated session requires genuine Firebase Auth custom token', () => {
   const loginRes = evaluateStudentLogin({ mobileNumber: '9876543210', dob: '2004-05-15' }, mockStudents);
   assert.equal(loginRes.success, true);
-
-  // Store session
-  const session = {
-    studentId: loginRes.student.uid,
-    token: loginRes.customToken,
-    customToken: loginRes.customToken,
-    authenticated: true,
-    student: loginRes.student
-  };
-  fakeSessionStorage['tl_student_session'] = JSON.stringify(session);
-
-  // Simulate refresh by reading back
-  const restored = JSON.parse(fakeSessionStorage['tl_student_session']);
-  assert.equal(restored.authenticated, true);
-  assert.equal(restored.studentId, 'student_1');
-  assert.equal(restored.student.name, 'Aravindh Kumar');
-  assert.equal(restored.student.sifNumber, 'SIF1001');
+  assert.ok(loginRes.customToken);
+  assert.equal(loginRes.customToken, 'custom_token_student_1');
 });
 
-test('14. Logout and subsequent login simulation', () => {
-  const fakeStorage = { tl_student_session: '{"authenticated": true}' };
-  // Logout
-  delete fakeStorage['tl_student_session'];
-  assert.equal(fakeStorage['tl_student_session'], undefined);
-
-  // Subsequent login
-  const reloginRes = evaluateStudentLogin({ mobileNumber: '9876543211', dob: '2005-08-20' }, mockStudents);
-  assert.equal(reloginRes.success, true);
-  assert.equal(reloginRes.student.name, 'Priya Mani');
-});
-
-test('15. Admin login remains unaffected', () => {
+test('14. Admin login remains unaffected', () => {
   // Admin credentials use email + password
   const adminAccount = { email: 'admin@tamillearning.edu', role: 'admin', status: 'active' };
   assert.equal(adminAccount.role, 'admin');
   assert.ok(adminAccount.email.includes('@'));
 });
 
-test('16. Firebase Function unavailable simulation', () => {
-  // Simulate callable function service unavailable (503 / unavailable error)
+test('15. Firebase Function unavailable error handling', () => {
   const fnErr = { code: 'functions/unavailable', message: 'Service Unavailable' };
   const code = fnErr.code.replace(/^functions\//, '');
   assert.equal(code, 'unavailable');
-  const userMessage = code === 'unavailable'
-    ? 'Unable to connect to the authentication server. Please check your internet connection.'
-    : 'Authentication service is temporarily unavailable. Please try again.';
-  assert.match(userMessage, /Unable to connect/i);
+  const userMessage = 'Unable to connect to the authentication service. Please try again shortly.';
+  assert.equal(userMessage, 'Unable to connect to the authentication service. Please try again shortly.');
 });
 
-test('17. Network interruption simulation (navigator.onLine is false)', () => {
+test('16. Network interruption handling (navigator.onLine is false)', () => {
   const isOnline = false;
   let thrownError = null;
   if (!isOnline) {
-    thrownError = new Error('Unable to connect to the authentication server. Please check your internet connection.');
-    thrownError.code = 'network-unavailable';
+    thrownError = new Error('Unable to connect to the authentication service. Please try again shortly.');
+    thrownError.code = 'unavailable';
   }
   assert.ok(thrownError);
-  assert.equal(thrownError.code, 'network-unavailable');
-  assert.match(thrownError.message, /check your internet connection/i);
+  assert.equal(thrownError.code, 'unavailable');
+  assert.equal(thrownError.message, 'Unable to connect to the authentication service. Please try again shortly.');
 });
-
-
