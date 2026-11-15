@@ -13,26 +13,14 @@ import {
   serverTimestamp as firestoreServerTimestamp,
   writeBatch as firestoreWriteBatch
 } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { db, auth, functions } from '../firebase';
-import { studentAuthService, normalizeDob, normalizeMobile } from './studentAuthService';
+import { db, auth } from '../firebase';
+import { studentAuthService, normalizeDob, normalizeMobile, readStudentSession, clearStudentSession } from './studentAuthService';
 
-export { normalizeDob, normalizeMobile };
-
-export const readStudentSession = () => {
-  return null;
-};
-
-export const clearStudentSession = () => {
-  try {
-    localStorage.removeItem('tamil_student_session');
-    localStorage.removeItem('tamil_student_mongo_session');
-  } catch (_) {}
-};
+export { normalizeDob, normalizeMobile, readStudentSession, clearStudentSession };
 
 /**
- * Student API Services (Firestore + Firebase Functions)
- * MongoDB is completely decoupled from student authentication.
+ * Student API Services (Firestore)
+ * 100% compatible with Firebase Spark (Free Tier) Plan — No Cloud Functions needed.
  */
 export const studentMongoApi = {
   async login(credentials) {
@@ -40,7 +28,8 @@ export const studentMongoApi = {
   },
 
   async me() {
-    const studentUid = auth.currentUser?.uid;
+    const session = readStudentSession();
+    const studentUid = session?.studentId || auth.currentUser?.uid;
     if (!studentUid) throw new Error('Session expired.');
     const docRef = firestoreDoc(db, 'users', studentUid);
     const snap = await firestoreGetDoc(docRef);
@@ -53,7 +42,8 @@ export const studentMongoApi = {
   },
 
   async updateProfile(patch) {
-    const studentUid = auth.currentUser?.uid;
+    const session = readStudentSession();
+    const studentUid = session?.studentId || auth.currentUser?.uid;
     if (!studentUid) throw new Error('Session expired.');
     const docRef = firestoreDoc(db, 'users', studentUid);
     const allowed = ['address', 'parentName', 'parentMobile', 'emergencyContact', 'bloodGroup', 'phone'];
@@ -67,7 +57,8 @@ export const studentMongoApi = {
   },
 
   async getPreferences() {
-    const studentUid = auth.currentUser?.uid;
+    const session = readStudentSession();
+    const studentUid = session?.studentId || auth.currentUser?.uid;
     if (!studentUid) return {};
     try {
       const docRef = firestoreDoc(db, 'student_preferences', studentUid);
@@ -79,7 +70,8 @@ export const studentMongoApi = {
   },
 
   async updatePreferences(patch) {
-    const studentUid = auth.currentUser?.uid;
+    const session = readStudentSession();
+    const studentUid = session?.studentId || auth.currentUser?.uid;
     if (!studentUid) return;
     try {
       const docRef = firestoreDoc(db, 'student_preferences', studentUid);
@@ -94,64 +86,137 @@ export const studentMongoApi = {
   },
 
   async submitTest(payload = {}) {
-    const testId = payload?.testId || payload?.testData?.id;
+    const testId = String(payload?.testId || payload?.testData?.id || '').trim();
     if (!testId || testId === 'undefined') {
       throw new Error('Test identifier is missing.');
     }
 
-    try {
-      const submitFn = httpsCallable(functions, 'submitStudentAssessment');
-      const response = await submitFn({
-        testId,
-        answers: payload.answers || {},
-        timeTakenMinutes: Math.max(0, Number(payload.timeTakenMinutes) || 0),
-      });
-      if (response?.data?.result) {
-        return response.data.result;
-      }
-    } catch (callableErr) {
-      console.warn('Backend evaluation callable unavailable, saving directly to Firestore:', callableErr.message);
+    const session = readStudentSession();
+    const studentId = String(payload.studentId || session?.studentId || auth.currentUser?.uid || '').trim();
+    if (!studentId) {
+      throw new Error('Student identifier is missing. Please sign in again.');
     }
 
     const testData = payload?.testData || {};
     const answers = payload?.answers || {};
-    const questions = testData?.questions || [];
+    const questions = Array.isArray(testData?.questions) ? testData.questions : [];
     let score = 0;
-    const details = [];
-
-    questions.forEach((q, index) => {
+    const breakdown = questions.map((q, index) => {
       const selected = answers[index];
-      const isCorrect = selected !== undefined && Number(selected) === Number(q.correctAnswer);
+      const correctAns = q.correctAnswer !== undefined ? q.correctAnswer : q.correctOption;
+      const isCorrect = selected !== undefined && String(selected) === String(correctAns);
       if (isCorrect) score += 1;
-      details.push({
-        questionIndex: index,
-        selectedAnswer: selected !== undefined ? Number(selected) : null,
+      return {
+        question: q.question || q.questionText || '',
+        options: Array.isArray(q.options) ? q.options : [],
+        correctAnswer: correctAns !== undefined ? Number(correctAns) : null,
+        studentChoice: selected === undefined ? -1 : Number(selected),
         isCorrect,
-      });
+        explanation: q.explanation || '',
+      };
     });
 
-    const studentUid = auth.currentUser?.uid;
-    const resultDoc = {
+    // Deterministic unique result document ID per student per test: `${studentId}_${testId}`
+    const resultDocId = `${studentId}_${testId}`;
+    const resultDocRef = firestoreDoc(db, 'results', resultDocId);
+
+    // Read previous attempts / best score
+    let prevAttempts = 0;
+    let prevBestScore = 0;
+    let existingCreatedAt = null;
+
+    try {
+      const existingSnap = await firestoreGetDoc(resultDocRef);
+      if (existingSnap.exists()) {
+        const prevData = existingSnap.data() || {};
+        prevAttempts = Number(prevData.attemptsCount) || 1;
+        prevBestScore = Number(prevData.bestScore != null ? prevData.bestScore : prevData.score) || 0;
+        existingCreatedAt = prevData.createdAt || null;
+      }
+    } catch (e) {
+      console.warn('Could not read existing test result:', e);
+    }
+
+    const calculatedPercentage = questions.length > 0 ? Math.round((score / questions.length) * 100) : 0;
+    const student = session?.student || {};
+
+    const studentName = payload?.studentName || student?.name || 'Student';
+    const email = payload?.email || student?.email || '';
+    const sifNumber = payload?.sifNumber || student?.sifNumber || student?.rollNumber || '';
+    const year = payload?.year || student?.year || testData?.year || '';
+    const departmentId = payload?.departmentId || student?.departmentId || testData?.departmentId || '';
+    const departmentName = payload?.departmentName || student?.departmentName || testData?.departmentName || '';
+
+    const resultData = {
+      studentId,
+      studentName,
+      email,
+      sifNumber,
       testId,
-      studentId: studentUid || '',
+      testTitle: testData?.title || 'Online Assessment',
+      year,
+      departmentId,
+      departmentName,
       score,
       totalQuestions: questions.length,
-      percentage: questions.length ? Math.round((score / questions.length) * 100) : 0,
-      details,
-      submittedAt: firestoreServerTimestamp(),
-      timeTakenMinutes: Math.max(0, Number(payload?.timeTakenMinutes) || 0),
+      total: questions.length,
+      percentage: calculatedPercentage,
+      breakdown,
+      submittedAt: new Date().toISOString(),
+      timeTakenMinutes: Math.max(0, Number(payload.timeTakenMinutes) || 0),
+      attemptsCount: prevAttempts + 1,
+      bestScore: Math.max(score, prevBestScore),
+      createdAt: existingCreatedAt || firestoreServerTimestamp(),
+      updatedAt: firestoreServerTimestamp()
     };
 
-    const docRef = await firestoreAddDoc(firestoreCollection(db, 'test_results'), resultDoc);
-    return { id: docRef.id, ...resultDoc };
+    // Upsert the single canonical result document in results collection
+    await firestoreSetDoc(resultDocRef, resultData, { merge: true });
+
+    // Clean up any legacy duplicate documents for this test & student
+    try {
+      const qDupes = firestoreQuery(
+        firestoreCollection(db, 'results'),
+        firestoreWhere('studentId', '==', studentId),
+        firestoreWhere('testId', '==', testId)
+      );
+      const dupesSnap = await firestoreGetDocs(qDupes);
+      dupesSnap.forEach((d) => {
+        if (d.id !== resultDocId) {
+          firestoreDeleteDoc(d.ref).catch(() => {});
+        }
+      });
+    } catch (_) {}
+
+    // Dispatch real-time notification alert to Admin
+    try {
+      firestoreAddDoc(firestoreCollection(db, 'notifications'), {
+        title: '📊 New Test Attempt Completed',
+        body: `${resultData.studentName} (${resultData.year || 'Student'}) completed "${resultData.testTitle}": Score ${resultData.score}/${resultData.totalQuestions} (${resultData.percentage}%).`,
+        type: 'test_submission',
+        category: 'tests',
+        recipientRole: 'admin',
+        targetScope: 'admin',
+        testId: resultData.testId,
+        studentId: resultData.studentId,
+        studentName: resultData.studentName,
+        read: false,
+        isRead: false,
+        status: 'pending',
+        createdAt: firestoreServerTimestamp(),
+      }).catch(() => {});
+    } catch (_) {}
+
+    return { id: resultDocId, ...resultData };
   },
 
   async getTestResults(testId) {
-    const studentUid = auth.currentUser?.uid;
+    const session = readStudentSession();
+    const studentUid = session?.studentId || auth.currentUser?.uid;
     if (!studentUid) return [];
     try {
       const q = firestoreQuery(
-        firestoreCollection(db, 'test_results'),
+        firestoreCollection(db, 'results'),
         firestoreWhere('studentId', '==', studentUid),
         firestoreWhere('testId', '==', testId)
       );
@@ -164,11 +229,12 @@ export const studentMongoApi = {
   },
 
   async getAllTestResults() {
-    const studentUid = auth.currentUser?.uid;
+    const session = readStudentSession();
+    const studentUid = session?.studentId || auth.currentUser?.uid;
     if (!studentUid) return [];
     try {
       const q = firestoreQuery(
-        firestoreCollection(db, 'test_results'),
+        firestoreCollection(db, 'results'),
         firestoreWhere('studentId', '==', studentUid)
       );
       const snap = await firestoreGetDocs(q);
