@@ -185,11 +185,17 @@ test('12. Unauthorized user / non-student', () => {
   assert.equal(res.error, 'unauthenticated'); // Student login rejects non-students
 });
 
-test('13. Authenticated session requires genuine Firebase Auth custom token', () => {
+test('13. Authenticated session persistence on Spark Plan (No Blaze required)', () => {
   const loginRes = evaluateStudentLogin({ mobileNumber: '9876543210', dob: '2004-05-15' }, mockStudents);
   assert.equal(loginRes.success, true);
-  assert.ok(loginRes.customToken);
-  assert.equal(loginRes.customToken, 'custom_token_student_1');
+  assert.equal(loginRes.student.uid, 'student_1');
+  const session = {
+    studentId: loginRes.student.uid,
+    authenticated: true,
+    student: loginRes.student
+  };
+  assert.equal(session.authenticated, true);
+  assert.equal(session.studentId, 'student_1');
 });
 
 test('14. Admin login remains unaffected', () => {

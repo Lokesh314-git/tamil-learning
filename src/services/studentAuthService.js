@@ -1,5 +1,12 @@
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '../firebase';
+import {
+  collection,
+  query,
+  where,
+  getDocs
+} from 'firebase/firestore';
+import { db } from '../firebase';
+
+const SESSION_KEY = 'tamil_student_session';
 
 /**
  * Normalizes a mobile phone number to a 10-digit string.
@@ -37,18 +44,43 @@ export function normalizeDob(value) {
 }
 
 /**
+ * Reads verified student session from localStorage (100% Spark Plan compatible).
+ */
+export function readStudentSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    const session = JSON.parse(raw || 'null');
+    if (!session?.studentId || !session?.authenticated || !session?.student) {
+      clearStudentSession();
+      return null;
+    }
+    return session;
+  } catch {
+    clearStudentSession();
+    return null;
+  }
+}
+
+/**
+ * Clears student session from localStorage.
+ */
+export function clearStudentSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem('tamil_student_mongo_session');
+  } catch (_) {}
+}
+
+/**
  * Student Authentication Service
- * Pure Firebase Architecture:
- * - Uses Firebase Cloud Function `studentLogin` (onCall) for server-side verification.
- * - Firestore is the single source of truth for student records.
- * - Authenticates with genuine Firebase Auth session via Custom Token.
- * - Completely decoupled from MongoDB.
+ * 100% compatible with Firebase Spark (Free Tier) Plan — No Blaze Plan or Cloud Functions needed.
+ * Directly verifies student records in Cloud Firestore.
  */
 export const studentAuthService = {
   /**
-   * Authenticates student using Mobile Number and Date of Birth.
+   * Authenticates student using Mobile Number and Date of Birth against Firestore.
    * @param {Object} credentials - { mobileNumber, dob }
-   * @returns {Promise<{ customToken: string, student: Object }>}
+   * @returns {Promise<{ student: Object }>}
    */
   async loginStudent({ mobileNumber, dob, identifier }) {
     const rawMobile = mobileNumber || identifier || '';
@@ -81,58 +113,81 @@ export const studentAuthService = {
     }
 
     try {
-      const studentLoginCallable = httpsCallable(functions, 'studentLogin');
-      const response = await studentLoginCallable({
-        mobileNumber: cleanMobile,
-        dob: cleanDob,
+      const usersRef = collection(db, 'users');
+      const [mobileSnap, phoneSnap] = await Promise.all([
+        getDocs(query(usersRef, where('role', '==', 'student'), where('mobileNumber', '==', cleanMobile))),
+        getDocs(query(usersRef, where('role', '==', 'student'), where('phone', '==', cleanMobile)))
+      ]);
+
+      const candidateMap = new Map();
+      [...mobileSnap.docs, ...phoneSnap.docs].forEach((d) => {
+        candidateMap.set(d.id, { id: d.id, uid: d.id, ...d.data() });
       });
 
-      if (!response?.data?.customToken) {
-        throw new Error('Authentication token not received from server.');
+      const candidates = Array.from(candidateMap.values()).filter(
+        (s) => s.isDeleted !== true && s.status !== 'deleted'
+      );
+
+      // Ambiguous duplicate mobile check
+      if (candidates.length > 1) {
+        const err = new Error('Multiple student accounts are associated with this mobile number. Please contact your college administrator for correction.');
+        err.code = 'failed-precondition';
+        throw err;
       }
 
-      return {
-        customToken: response.data.customToken,
-        student: response.data.student,
-      };
-    } catch (callableErr) {
-      const code = String(callableErr.code || '').replace(/^functions\//, '');
-      const rawMsg = callableErr.message || '';
-
-      if (code === 'unauthenticated') {
+      if (candidates.length === 0) {
         const err = new Error('Invalid mobile number or date of birth.');
         err.code = 'unauthenticated';
         throw err;
       }
 
-      if (code === 'permission-denied') {
-        const err = new Error(rawMsg || 'Student account is inactive or blocked. Please contact your department admin.');
+      const student = candidates[0];
+
+      // Inactive / blocked account check
+      if (['blocked', 'inactive', 'rejected'].includes(student.status)) {
+        const err = new Error('Student account is inactive or blocked. Please contact your department admin.');
         err.code = 'permission-denied';
         throw err;
       }
 
-      if (code === 'failed-precondition') {
-        const err = new Error(rawMsg || 'Multiple student accounts are associated with this mobile number. Please contact your college administrator for correction.');
-        err.code = 'failed-precondition';
+      // Date of Birth match verification
+      const storedDob = normalizeDob(student.dob);
+      if (!storedDob || storedDob !== cleanDob) {
+        const err = new Error('Invalid mobile number or date of birth.');
+        err.code = 'unauthenticated';
         throw err;
       }
 
-      if (code === 'resource-exhausted') {
-        const err = new Error('Too many sign-in attempts. Please try again in 15 minutes.');
-        err.code = 'resource-exhausted';
+      const studentUid = String(student.uid || student.id);
+      const verifiedStudent = {
+        ...student,
+        id: studentUid,
+        uid: studentUid,
+        role: 'student',
+        status: student.status || 'active'
+      };
+
+      // Store verified session locally for seamless navigation and refresh persistence
+      const session = {
+        studentId: studentUid,
+        authenticated: true,
+        student: verifiedStudent
+      };
+      try {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      } catch (_) {}
+
+      return {
+        student: verifiedStudent
+      };
+    } catch (err) {
+      if (['invalid-argument', 'unauthenticated', 'permission-denied', 'failed-precondition'].includes(err.code)) {
         throw err;
       }
-
-      if (code === 'invalid-argument') {
-        const err = new Error(rawMsg || 'Please enter a valid 10-digit registered mobile number and date of birth.');
-        err.code = 'invalid-argument';
-        throw err;
-      }
-
-      // For network errors, internal errors, unavailable, 404, or CORS issues:
-      const err = new Error('Unable to connect to the authentication service. Please try again shortly.');
-      err.code = 'unavailable';
-      throw err;
+      console.warn('[studentAuthService] Firestore verification error:', err);
+      const netErr = new Error('Unable to connect to the authentication service. Please try again shortly.');
+      netErr.code = 'unavailable';
+      throw netErr;
     }
   },
 };

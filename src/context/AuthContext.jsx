@@ -5,7 +5,7 @@ import { auth, db } from '../firebase';
 import { normalizeEmail } from '../utils/emailValidation';
 import { isDeletedAccount } from '../utils/studentStatus';
 import { ROOT_ADMIN_EMAIL } from '../utils/roles';
-import { studentAuthService, normalizeMobile } from '../services/studentAuthService';
+import { studentAuthService, normalizeMobile, readStudentSession, clearStudentSession } from '../services/studentAuthService';
 
 const AuthContext = createContext();
 
@@ -82,6 +82,17 @@ export const AuthProvider = ({ children }) => {
         return;
       }
 
+      // Spark Plan Session Persistence: If no Firebase Auth user, restore verified student session
+      const studentSession = readStudentSession();
+      if (studentSession?.studentId && studentSession.authenticated && studentSession.student) {
+        const student = studentSession.student;
+        const uid = studentSession.studentId;
+        setUser({ uid, id: uid, ...student });
+        setProfile(student);
+        setLoading(false);
+        return;
+      }
+
       setUser(null);
       setProfile(null);
       setLoading(false);
@@ -95,6 +106,7 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const loginAdmin = async ({ email, password }) => {
+    clearStudentSession();
     await signOut(auth).catch(() => {});
     const cleanEmail = normalizeEmail(email);
 
@@ -173,48 +185,32 @@ export const AuthProvider = ({ children }) => {
   };
 
   const loginStudentWithCredentials = async ({ mobileNumber, dob, identifier }) => {
+    clearStudentSession();
     await signOut(auth).catch(() => {});
     const cleanMobile = normalizeMobile(mobileNumber || identifier || '');
 
-    // 1. Authenticate with Firebase Cloud Function (Backend verification against Firestore)
-    const { customToken, student } = await studentAuthService.loginStudent({
+    // 1. Authenticate with direct Firestore verification (100% Spark Plan compatible)
+    const { student } = await studentAuthService.loginStudent({
       mobileNumber: cleanMobile,
       dob
     });
 
-    if (!customToken) {
-      throw new Error('Authentication token not received from server.');
-    }
-
-    // 2. Authenticate genuinely with Firebase Authentication using the Custom Auth Token
-    const userCred = await signInWithCustomToken(auth, customToken);
-    const studentUid = userCred.user.uid;
-
-    // 3. Load verified student profile from Firestore
-    let studentProfile = null;
-    try {
-      const snap = await getDoc(doc(db, 'users', studentUid));
-      if (snap.exists()) {
-        studentProfile = { uid: snap.id, id: snap.id, ...snap.data() };
-      }
-    } catch (readErr) {
-      console.warn('[AuthContext] Firestore profile fetch note:', readErr.message);
-    }
-
-    const finalProfile = studentProfile || {
+    const studentUid = String(student.uid || student.id);
+    const finalProfile = {
+      ...student,
       uid: studentUid,
       id: studentUid,
-      ...student,
       role: 'student',
-      status: student?.status || 'active'
+      status: student.status || 'active'
     };
 
     if (isDeletedAccount(finalProfile) || ['deleted', 'blocked', 'rejected', 'inactive'].includes(finalProfile.status)) {
+      clearStudentSession();
       await signOut(auth).catch(() => {});
       throw new Error('Student account is inactive or blocked. Please contact your department admin.');
     }
 
-    setUser(userCred.user);
+    setUser({ uid: studentUid, id: studentUid, ...finalProfile });
     setProfile(finalProfile);
     setLoading(false);
     return finalProfile;
@@ -234,6 +230,7 @@ export const AuthProvider = ({ children }) => {
   }, [profile, user]);
 
   const logout = async () => {
+    clearStudentSession();
     await signOut(auth).catch(() => {});
     setUser(null);
     setProfile(null);
