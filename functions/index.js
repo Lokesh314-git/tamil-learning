@@ -60,8 +60,27 @@ async function assertAdminHttp(req) {
 async function verifyHttpUser(req) {
   const authorization = String(req.headers.authorization || '');
   const match = authorization.match(/^Bearer\s+(.+)$/i);
-  if (!match) throw new HttpsError('unauthenticated', 'Sign in is required.');
-  return admin.auth().verifyIdToken(match[1]);
+  const token = match ? match[1] : (req.query?.token || req.query?.auth);
+  if (token) {
+    return admin.auth().verifyIdToken(token);
+  }
+
+  // Check X-Student-Id header / query for Spark plan student authentication
+  const studentId = req.headers['x-student-id'] || req.query?.studentId;
+  if (studentId) {
+    let docSnap = await admin.firestore().doc(`users/${studentId}`).get();
+    if (!docSnap.exists) {
+      docSnap = await admin.firestore().doc(`students/${studentId}`).get();
+    }
+    if (docSnap.exists) {
+      const data = docSnap.data();
+      if (!data.isDeleted && data.status !== 'blocked' && data.status !== 'deleted' && data.status !== 'inactive') {
+        return { uid: studentId, role: 'student', isStudentSession: true, studentData: data };
+      }
+    }
+  }
+
+  throw new HttpsError('unauthenticated', 'Sign in is required.');
 }
 
 function normalizeDobServer(value) {
@@ -1493,11 +1512,31 @@ exports.api = onRequest(
       const downloadMatch = path.match(/\/(?:api\/)?(?:materials|files|documents)?\/?download\/([a-zA-Z0-9_-]+)/i);
       if (downloadMatch && req.method === 'GET') {
         const decoded = await verifyHttpUser(req);
-        const userSnap = await admin.firestore().doc(`users/${decoded.uid}`).get();
-        const profile = userSnap.data();
-        if (!userSnap.exists || profile?.role !== 'admin' && (profile?.role !== 'student' || profile?.isDeleted === true || profile?.status === 'blocked' || profile?.status === 'rejected' || profile?.status === 'deleted' || !(profile?.isApproved === true || profile?.approved === true || profile?.status === 'active'))) {
-          throw new HttpsError('permission-denied', 'An active student or administrator account is required.');
+        let userProfile = decoded.studentData || null;
+        let role = decoded.role || '';
+
+        if (!userProfile) {
+          const userSnap = await admin.firestore().doc(`users/${decoded.uid}`).get();
+          if (userSnap.exists) {
+            userProfile = userSnap.data();
+            role = userProfile.role || (decoded.email ? 'admin' : 'student');
+          } else {
+            const studentSnap = await admin.firestore().doc(`students/${decoded.uid}`).get();
+            if (studentSnap.exists) {
+              userProfile = studentSnap.data();
+              role = 'student';
+            }
+          }
         }
+
+        if (role !== 'admin') {
+          const isBlocked = userProfile?.isDeleted === true || userProfile?.status === 'blocked' || userProfile?.status === 'rejected' || userProfile?.status === 'deleted' || userProfile?.status === 'inactive';
+          const isActive = userProfile?.isApproved === true || userProfile?.approved === true || userProfile?.status === 'active';
+          if (isBlocked || !isActive) {
+            return res.status(403).json({ error: 'An active student or administrator account is required.' });
+          }
+        }
+
         const rawId = downloadMatch[1];
         const { bucket, db } = await getGridFSBucket();
 
@@ -1524,8 +1563,56 @@ exports.api = onRequest(
           }
         }
 
+        // D. Check Firestore mongo_file_chunks collection as auto-recovery fallback
+        if (!targetFile) {
+          const chunksSnap = await admin.firestore().collection('mongo_file_chunks')
+            .where('fileId', '==', rawId)
+            .get();
+
+          if (!chunksSnap.empty) {
+            const parts = chunksSnap.docs.map((d) => d.data());
+            parts.sort((a, b) => (a.index || 0) - (b.index || 0));
+            const fullBase64 = parts.map((p) => p.chunkData).join('');
+            if (fullBase64) {
+              const cleanBase64 = fullBase64.includes('base64,') ? fullBase64.split('base64,')[1] : fullBase64;
+              const buffer = Buffer.from(cleanBase64, 'base64');
+              const mimeType = 'application/pdf';
+              const fileName = `Unit_Material_${rawId}.pdf`;
+
+              // Auto-heal: Upload to GridFS in the background so future requests stream from GridFS
+              uploadBufferToGridFS({
+                buffer,
+                fileName,
+                mimeType,
+                metadata: { fileId: rawId, recoveredFrom: 'mongo_file_chunks' }
+              }).catch((e) => console.warn('[Recovery] Auto-heal GridFS upload notice:', e?.message));
+
+              res.set('Content-Type', mimeType);
+              res.set('Content-Length', buffer.length);
+              res.set('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+              res.set('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+              return res.end(buffer);
+            }
+          }
+        }
+
         if (!targetFile) {
           return res.status(404).json({ error: 'File not found in MongoDB GridFS repository.' });
+        }
+
+        // Verify document access based on the unit's department and year permissions
+        if (role !== 'admin') {
+          const fileYear = targetFile.metadata?.year;
+          const fileDept = targetFile.metadata?.departmentId;
+          const studentYear = userProfile?.year;
+          const studentDept = userProfile?.departmentId;
+
+          if (fileYear && fileYear !== 'All Years' && fileYear !== 'all' && studentYear && fileYear !== studentYear) {
+            return res.status(403).json({ error: `Access restricted: this document is intended for ${fileYear}.` });
+          }
+          if (fileDept && fileDept !== 'all' && fileDept !== 'All Classes' && studentDept && fileDept !== studentDept) {
+            return res.status(403).json({ error: 'Access restricted: this document is intended for a different department.' });
+          }
         }
 
         const mimeType = targetFile.metadata?.mimeType || targetFile.contentType || 'application/pdf';
@@ -1833,5 +1920,129 @@ exports.auditStudentMobileNumbers = onCall({ region: 'us-central1', cors: true }
     invalidMobiles,
     missingDobs,
     generatedAt: new Date().toISOString()
+  };
+});
+
+/**
+ * Callable: Recover Legacy Documents from mongo_file_chunks into MongoDB GridFS
+ * Accessible only by administrators.
+ * Scans all curriculum units in Firestore.
+ * If a unit's file is stored as chunks in mongo_file_chunks rather than MongoDB GridFS,
+ * reassembles the binary content and uploads it to GridFS, then updates the unit document.
+ */
+exports.recoverLegacyDocuments = onCall({ region: 'us-central1', cors: true, secrets: [MONGODB_URI] }, async (request) => {
+  await assertAdmin(request);
+  const db = admin.firestore();
+  const { bucket } = await getGridFSBucket();
+
+  const unitsSnap = await db.collection('units').get();
+  const results = [];
+  let recoveredCount = 0;
+  let alreadyValidCount = 0;
+  let missingCount = 0;
+
+  for (const docSnap of unitsSnap.docs) {
+    const unit = docSnap.data();
+    const unitId = docSnap.id;
+    const fileId = unit.gridFsFileId || unit.fileId;
+
+    if (!fileId) {
+      continue;
+    }
+
+    // 1. Check if already present in GridFS
+    let existsInGridFS = false;
+    if (ObjectId.isValid(fileId)) {
+      const files = await bucket.find({ _id: new ObjectId(fileId) }).toArray();
+      if (files.length > 0) existsInGridFS = true;
+    }
+    if (!existsInGridFS) {
+      const files = await bucket.find({ 'metadata.fileId': fileId }).toArray();
+      if (files.length > 0) existsInGridFS = true;
+    }
+
+    if (existsInGridFS) {
+      alreadyValidCount++;
+      continue;
+    }
+
+    // 2. Not in GridFS — Search Firestore mongo_file_chunks
+    const chunksSnap = await db.collection('mongo_file_chunks').where('fileId', '==', fileId).get();
+    if (chunksSnap.empty) {
+      missingCount++;
+      results.push({ unitId, unitNumber: unit.unitNumber, title: unit.title, fileId, status: 'no_chunks_found' });
+      continue;
+    }
+
+    // 3. Reassemble Base64 chunks
+    const parts = chunksSnap.docs.map((d) => d.data());
+    parts.sort((a, b) => (a.index || 0) - (b.index || 0));
+    const fullBase64 = parts.map((p) => p.chunkData).join('');
+
+    if (!fullBase64) {
+      missingCount++;
+      results.push({ unitId, unitNumber: unit.unitNumber, title: unit.title, fileId, status: 'empty_chunk_data' });
+      continue;
+    }
+
+    const cleanBase64 = fullBase64.includes('base64,') ? fullBase64.split('base64,')[1] : fullBase64;
+    const buffer = Buffer.from(cleanBase64, 'base64');
+    const fileName = unit.fileName || `Unit_${unit.unitNumber || 1}_Curriculum_Notes.pdf`;
+    const mimeType = unit.mimeType || 'application/pdf';
+
+    // 4. Upload buffer to MongoDB GridFS
+    const uploadRes = await uploadBufferToGridFS({
+      buffer,
+      fileName,
+      mimeType,
+      metadata: {
+        legacyFileId: fileId,
+        unitNumber: unit.unitNumber || 1,
+        year: unit.year || 'All Years',
+        departmentId: unit.departmentId || 'all',
+        departmentName: unit.departmentName || 'All Classes',
+        title: unit.title || `Unit ${unit.unitNumber || 1}`,
+        recoveredFrom: 'mongo_file_chunks',
+        recoveredAt: new Date().toISOString()
+      }
+    });
+
+    const newGridFsId = uploadRes.fileId;
+    const newDownloadUrl = uploadRes.downloadUrl;
+
+    // 5. Update Unit document with verified GridFS metadata
+    await db.collection('units').doc(unitId).update({
+      gridFsFileId: newGridFsId,
+      fileId: newGridFsId,
+      downloadUrl: newDownloadUrl,
+      pdfLink: newDownloadUrl,
+      fileName,
+      fileSize: buffer.length,
+      mimeType,
+      storageProvider: 'MongoDB GridFS',
+      recoveredAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    recoveredCount++;
+    results.push({
+      unitId,
+      unitNumber: unit.unitNumber,
+      title: unit.title,
+      oldFileId: fileId,
+      newGridFsId,
+      downloadUrl: newDownloadUrl,
+      status: 'recovered'
+    });
+  }
+
+  return {
+    success: true,
+    totalUnitsScanned: unitsSnap.size,
+    recoveredCount,
+    alreadyValidCount,
+    missingCount,
+    details: results,
+    timestamp: new Date().toISOString()
   };
 });

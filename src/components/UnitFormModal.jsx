@@ -27,12 +27,19 @@ const UnitFormModal = ({
 
   useEffect(() => {
     if (initial) {
+      const initialFileId = initial.gridFsFileId || initial.fileId || '';
+      const initialDownloadUrl = initial.downloadUrl || (initial.pdfLink && initial.pdfLink.startsWith('http') ? initial.pdfLink : (initialFileId ? `https://us-central1-tamil-learning-9f609.cloudfunctions.net/api/materials/download/${initialFileId}` : ''));
       setForm({
         unitNumber: Number(initial.unitNumber) || 1,
         title: initial.title || '',
-        fileId: initial.fileId || initial.gridFsFileId || initial.pdfLink || '',
+        fileId: initialFileId,
+        gridFsFileId: initialFileId,
+        downloadUrl: initialDownloadUrl,
+        pdfLink: initial.pdfLink || initialDownloadUrl,
         fileName: initial.fileName || '',
-        fileSize: initial.fileSize || 0,
+        fileSize: Number(initial.fileSize) || 0,
+        mimeType: initial.mimeType || 'application/pdf',
+        storageProvider: 'MongoDB GridFS',
         departmentId: initial.departmentId || selectedDepartmentId || 'all'
       });
     } else {
@@ -40,8 +47,13 @@ const UnitFormModal = ({
         unitNumber: 1,
         title: '',
         fileId: '',
+        gridFsFileId: '',
+        downloadUrl: '',
+        pdfLink: '',
         fileName: '',
         fileSize: 0,
+        mimeType: 'application/pdf',
+        storageProvider: 'MongoDB GridFS',
         departmentId: selectedDepartmentId || 'all'
       });
     }
@@ -64,17 +76,31 @@ const UnitFormModal = ({
     setFileError('');
 
     try {
-      const { fileId, fileName, size } = await uploadFileToStorage(file, 'units', (pct) => {
-        setUploadProgress(pct);
-      });
+      const uploadRes = await uploadFileToStorage(
+        file,
+        'units',
+        (pct) => {
+          setUploadProgress(pct);
+        },
+        {
+          unitNumber: form.unitNumber,
+          departmentId: form.departmentId,
+          year: year || '1st Year',
+          category: 'curriculum_unit_pdf'
+        }
+      );
 
       setForm((prev) => ({
         ...prev,
-        fileId: fileId,
-        gridFsFileId: fileId,
-        fileName: fileName,
-        fileSize: size,
-        title: prev.title || fileName.replace(/\.[^/.]+$/, '')
+        fileId: uploadRes.fileId,
+        gridFsFileId: uploadRes.gridFsFileId || uploadRes.fileId,
+        downloadUrl: uploadRes.downloadUrl || uploadRes.url,
+        pdfLink: uploadRes.downloadUrl || uploadRes.url,
+        fileName: uploadRes.fileName,
+        fileSize: uploadRes.fileSize || uploadRes.size,
+        mimeType: uploadRes.mimeType || 'application/pdf',
+        storageProvider: 'MongoDB GridFS',
+        title: prev.title || uploadRes.fileName.replace(/\.[^/.]+$/, '')
       }));
     } catch (err) {
       console.error('[UnitFormModal] File upload error:', err);
@@ -85,7 +111,16 @@ const UnitFormModal = ({
   };
 
   const handleClearFile = () => {
-    setForm((prev) => ({ ...prev, fileId: '', gridFsFileId: '', fileName: '', fileSize: 0 }));
+    setForm((prev) => ({
+      ...prev,
+      fileId: '',
+      gridFsFileId: '',
+      downloadUrl: '',
+      pdfLink: '',
+      fileName: '',
+      fileSize: 0,
+      mimeType: ''
+    }));
     if (fileInputRef.current) fileInputRef.current.value = '';
     setUploadProgress(0);
   };
@@ -97,6 +132,13 @@ const UnitFormModal = ({
     }
     onSave({
       ...form,
+      fileId: form.gridFsFileId || form.fileId || '',
+      gridFsFileId: form.gridFsFileId || form.fileId || '',
+      downloadUrl: form.downloadUrl || form.pdfLink || '',
+      pdfLink: form.pdfLink || form.downloadUrl || '',
+      fileName: form.fileName || '',
+      fileSize: Number(form.fileSize) || 0,
+      mimeType: form.mimeType || 'application/pdf',
       storageProvider: 'MongoDB GridFS',
       updatedAt: new Date().toISOString()
     });

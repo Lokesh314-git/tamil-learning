@@ -4,9 +4,31 @@ import { collection, getDocs, doc, setDoc, updateDoc, serverTimestamp, query, wh
 import { httpsCallable } from 'firebase/functions';
 
 const getBearerHeaders = async () => {
-  const token = await auth.currentUser?.getIdToken();
-  if (!token) throw new Error('Sign in is required for this storage operation.');
-  return { Authorization: `Bearer ${token}` };
+  const headers = {};
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      return headers;
+    }
+  } catch (_) {}
+
+  // Check student session for Spark plan / Firestore student auth
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('tamil_student_session') : null;
+    if (raw) {
+      const session = JSON.parse(raw);
+      if (session?.studentId) {
+        headers['X-Student-Id'] = session.studentId;
+        if (session.student?.mobileNumber) headers['X-Student-Mobile'] = session.student.mobileNumber;
+        if (session.student?.year) headers['X-Student-Year'] = session.student.year;
+        if (session.student?.departmentId) headers['X-Student-Dept'] = session.student.departmentId;
+        return headers;
+      }
+    }
+  } catch (_) {}
+
+  return headers;
 };
 
 /**
@@ -135,36 +157,113 @@ export const mongoService = {
       // 1. Read file as Base64 in browser
       const base64Data = await readFileAsBase64(file, (pct) => {
         if (typeof onProgress === 'function') {
-          onProgress(Math.round(10 + pct * 0.4)); // 10% -> 50%
+          onProgress(Math.round(10 + pct * 0.3)); // 10% -> 40%
         }
       });
 
-      if (typeof onProgress === 'function') onProgress(55);
+      if (typeof onProgress === 'function') onProgress(45);
 
       const mimeType = file.type || 'application/pdf';
       const cleanFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const fileId = `mongo_file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const downloadUrl = `${MONGO_CONFIG.endpoints.download}/${fileId}`;
 
-      if (typeof onProgress === 'function') onProgress(60);
+      // 2. Upload to MongoDB GridFS via backend Cloud Function or HTTP endpoint
+      let uploadResult = null;
+      let _lastBackendError = null;
+
+      try {
+        if (typeof onProgress === 'function') onProgress(50);
+        const uploadFn = httpsCallable(functions, 'uploadFileToMongo');
+        const res = await uploadFn({
+          fileBase64: base64Data,
+          fileName: cleanFileName,
+          mimeType,
+          metadata: {
+            title: metadata.title || file.name.replace(/\.[^/.]+$/, ''),
+            category: metadata.category || 'pdf_notes',
+            unitNumber: Number(metadata.unitNumber) || 1,
+            year: metadata.year || 'All Years',
+            departmentId: metadata.departmentId || 'all',
+            departmentName: metadata.departmentName || 'All Classes',
+            section: metadata.section || 'all',
+            subject: metadata.subject || 'Tamil',
+            description: metadata.description || '',
+          }
+        });
+        if (res?.data?.success || res?.data?.fileId) {
+          uploadResult = res.data;
+        }
+      } catch (callableErr) {
+        _lastBackendError = callableErr;
+        console.warn('[MongoService] Callable upload notice, checking HTTP API endpoint:', callableErr?.message);
+        try {
+          const headers = await getBearerHeaders();
+          const response = await fetch(MONGO_CONFIG.endpoints.upload, {
+            method: 'POST',
+            headers: {
+              ...headers,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              fileBase64: base64Data,
+              fileName: cleanFileName,
+              mimeType,
+              ...metadata
+            })
+          });
+          if (response.ok) {
+            uploadResult = await response.json();
+          } else {
+            const errJson = await response.json().catch(() => ({}));
+            _lastBackendError = new Error(errJson.error || `HTTP upload failed with status ${response.status}`);
+          }
+        } catch (httpErr) {
+          _lastBackendError = httpErr;
+          console.warn('[MongoService] HTTP upload endpoint also unavailable:', httpErr?.message);
+        }
+      }
+
+      // 3. Fallback for Spark Plan local environments without deployed Cloud Functions
+      if (!uploadResult || !uploadResult.fileId) {
+        console.warn('[MongoService] Backend GridFS unavailable, using Firestore chunk storage fallback.');
+        const fallbackFileId = `mongo_file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const fallbackDownloadUrl = `${MONGO_CONFIG.endpoints.download}/${fallbackFileId}`;
+
+        await mongoService.storeFileChunks(fallbackFileId, base64Data);
+        uploadResult = {
+          success: true,
+          fileId: fallbackFileId,
+          downloadUrl: fallbackDownloadUrl,
+          fileName: cleanFileName,
+          fileSize: file.size,
+          mimeType,
+          isFallback: true
+        };
+      }
+
+      const verifiedFileId = uploadResult.fileId;
+      const verifiedDownloadUrl = uploadResult.downloadUrl || `${MONGO_CONFIG.endpoints.download}/${verifiedFileId}`;
+
+      if (typeof onProgress === 'function') onProgress(85);
 
       // Cache document locally in sessionStorage for immediate fast preview
       try {
         if (typeof window !== 'undefined' && window.sessionStorage) {
-          window.sessionStorage.setItem(`mongo_doc_${fileId}`, base64Data);
+          window.sessionStorage.setItem(`mongo_doc_${verifiedFileId}`, base64Data);
         }
       } catch (_) {}
 
-      // Store clean metadata in downloads collection and chunks in mongo_file_chunks concurrently
-      const firestoreCleanPayload = {
-        _id: fileId,
-        id: fileId,
-        fileId: fileId,
+      // Store clean metadata in downloads collection for cross-reference
+      const firestorePayload = {
+        _id: verifiedFileId,
+        id: verifiedFileId,
+        fileId: verifiedFileId,
+        gridFsFileId: verifiedFileId,
         title: metadata.title || file.name.replace(/\.[^/.]+$/, ''),
         fileName: cleanFileName,
-        fileSize: file.size,
-        mimeType: mimeType,
-        downloadUrl: downloadUrl,
+        fileSize: uploadResult.fileSize || file.size,
+        mimeType: uploadResult.mimeType || mimeType,
+        downloadUrl: verifiedDownloadUrl,
+        pdfLink: verifiedDownloadUrl,
         category: metadata.category || 'pdf_notes',
         unitNumber: Number(metadata.unitNumber) || 1,
         year: metadata.year || 'All Years',
@@ -173,42 +272,27 @@ export const mongoService = {
         section: metadata.section || 'all',
         description: metadata.description || '',
         storageProvider: 'MongoDB GridFS',
-        mongoCluster: MONGO_CONFIG.clusterHost,
-        mongoDatabase: MONGO_CONFIG.databaseName,
-        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
-      await Promise.all([
-        mongoService.storeFileChunks(fileId, base64Data),
-        setDoc(doc(db, 'downloads', fileId), firestoreCleanPayload, { merge: true })
-      ]);
-
-      if (typeof onProgress === 'function') onProgress(90);
-
-      // Non-blocking background sync to Mongo Cloud Function / API if active
-      (async () => {
-        try {
-          const uploadFn = httpsCallable(functions, 'uploadFileToMongo');
-          await uploadFn({
-            fileBase64: base64Data,
-            fileName: cleanFileName,
-            mimeType,
-            fileId,
-            metadata: firestoreCleanPayload
-          });
-        } catch (_) {}
-      })();
+      try {
+        await setDoc(doc(db, 'downloads', verifiedFileId), firestorePayload, { merge: true });
+      } catch (fErr) {
+        console.warn('[MongoService] Firestore downloads record notice:', fErr?.message);
+      }
 
       if (typeof onProgress === 'function') onProgress(100);
 
       return {
         success: true,
-        fileId: fileId,
-        downloadUrl: downloadUrl,
+        fileId: verifiedFileId,
+        gridFsFileId: verifiedFileId,
+        downloadUrl: verifiedDownloadUrl,
+        pdfLink: verifiedDownloadUrl,
         fileName: cleanFileName,
-        fileSize: file.size,
-        mimeType: mimeType,
+        fileSize: uploadResult.fileSize || file.size,
+        mimeType: uploadResult.mimeType || mimeType,
+        storageProvider: 'MongoDB GridFS'
       };
     } catch (err) {
       console.error('[MongoService] Upload to GridFS error:', err);
@@ -264,8 +348,42 @@ export const mongoService = {
       }
     }
 
-    // 3. Fetch chunks from mongo_file_chunks collection
+    // 3. Assemble possible HTTP streaming endpoints
+    const targetUrls = [];
+    if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://'))) {
+      targetUrls.push(fallbackUrl);
+    }
     if (fileId) {
+      targetUrls.push(`${MONGO_CONFIG.endpoints.download}/${fileId}`);
+    }
+    if (fallbackUrl && !fallbackUrl.startsWith('http') && !fallbackUrl.startsWith('data:') && !fallbackUrl.startsWith('blob:')) {
+      targetUrls.push(`${MONGO_CONFIG.endpoints.download}/${fallbackUrl}`);
+    }
+
+    // 4. Attempt streaming from authenticated backend GridFS download endpoints
+    let lastError = null;
+    const headers = await getBearerHeaders();
+
+    for (const url of targetUrls) {
+      try {
+        const response = await fetch(url, { headers });
+        if (response.ok) {
+          const blob = await response.blob();
+          const mimeType = blob.type || 'application/pdf';
+          const blobUrl = URL.createObjectURL(blob);
+          return { blobUrl, blob, mimeType };
+        } else {
+          const err = new Error(`Document request failed with HTTP ${response.status}`);
+          err.status = response.status;
+          lastError = err;
+        }
+      } catch (fetchErr) {
+        lastError = fetchErr;
+      }
+    }
+
+    // 5. Admin-only fallback: check Firestore mongo_file_chunks collection
+    if (fileId && auth.currentUser) {
       try {
         const q = query(collection(db, 'mongo_file_chunks'), where('fileId', '==', fileId));
         const snap = await getDocs(q);
@@ -286,22 +404,18 @@ export const mongoService = {
           }
         }
       } catch (err) {
-        console.warn('[MongoService] Chunk fetch warning:', err);
+        console.warn('[MongoService] Admin chunk query notice:', err?.message);
       }
     }
 
-    // 4. If HTTP fallback URL is available and valid
+    // 6. Direct HTTP URL fallback if all else failed
     if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://'))) {
-      if (fallbackUrl.startsWith(MONGO_CONFIG.endpoints.download)) {
-        const response = await fetch(fallbackUrl, { headers: await getBearerHeaders() });
-        if (!response.ok) throw new Error(`Document request failed (${response.status}).`);
-        const blob = await response.blob();
-        return { blobUrl: URL.createObjectURL(blob), blob, mimeType: blob.type || 'application/pdf' };
-      }
       return { blobUrl: fallbackUrl, blob: null, mimeType: 'application/pdf' };
     }
 
-    throw new Error('Document content could not be found.');
+    const finalErr = lastError || new Error('Document content could not be found.');
+    if (!finalErr.status) finalErr.status = 404;
+    throw finalErr;
   },
 
   /**

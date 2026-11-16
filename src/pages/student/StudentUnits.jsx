@@ -327,7 +327,7 @@ const StudentUnits = () => {
       {/* Sub-tab 1: Notes & PDFs */}
       {activeSubTab === 'notes' && (
         <div className="grid grid-2" style={{ gap: 14 }}>
-          {(currentUnitRecord?.fileId || currentUnitRecord?.fileName || currentUnitRecord?.fileUrl) && (
+          {(currentUnitRecord?.fileId || currentUnitRecord?.gridFsFileId || currentUnitRecord?.fileName || currentUnitRecord?.fileUrl || currentUnitRecord?.pdfLink || currentUnitRecord?.downloadUrl) && (
             <StudentContentCard style={{ borderLeft: '4px solid var(--color-primary)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <span className="badge badge-primary">Primary Unit Syllabus</span>
@@ -336,7 +336,16 @@ const StudentUnits = () => {
               <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 12px' }}>
                 Comprehensive syllabus text and reference materials stored in MongoDB.
               </p>
-              <Button onClick={() => setViewingDoc({ title: currentUnitRecord.title || `Unit ${activeUnit} Official Notes`, fileUrl: currentUnitRecord.fileUrl, fileName: currentUnitRecord.fileName || `Unit_${activeUnit}_Notes.pdf`, fileId: currentUnitRecord.fileId || currentUnitRecord.gridFsFileId || currentUnitRecord.id })}>
+              <Button onClick={() => setViewingDoc({
+                title: currentUnitRecord.title || `Unit ${activeUnit} Official Notes`,
+                fileUrl: currentUnitRecord.downloadUrl || currentUnitRecord.pdfLink || currentUnitRecord.fileUrl || '',
+                downloadUrl: currentUnitRecord.downloadUrl || currentUnitRecord.pdfLink || currentUnitRecord.fileUrl || '',
+                pdfLink: currentUnitRecord.pdfLink || currentUnitRecord.downloadUrl || currentUnitRecord.fileUrl || '',
+                fileName: currentUnitRecord.fileName || `Unit_${activeUnit}_Notes.pdf`,
+                fileId: currentUnitRecord.gridFsFileId || currentUnitRecord.fileId || currentUnitRecord.id || '',
+                gridFsFileId: currentUnitRecord.gridFsFileId || currentUnitRecord.fileId || '',
+                category: 'curriculum_unit_pdf'
+              })}>
                 <Eye size={15} style={{ marginRight: 6 }} /> Open Unit Notes
               </Button>
             </StudentContentCard>

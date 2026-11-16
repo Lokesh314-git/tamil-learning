@@ -42,10 +42,15 @@ export const uploadFileToStorage = async (file, folder = 'study_materials', onPr
 
     return {
       url: result.downloadUrl,
+      downloadUrl: result.downloadUrl,
+      pdfLink: result.downloadUrl,
       fileId: result.fileId,
+      gridFsFileId: result.fileId,
       fileName: result.fileName || cleanName,
       size: result.fileSize || file.size,
+      fileSize: result.fileSize || file.size,
       mimeType: result.mimeType || mimeType,
+      storageProvider: 'MongoDB GridFS',
       mongoDocId: result.fileId,
     };
   } catch (err) {

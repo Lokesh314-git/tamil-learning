@@ -15,7 +15,8 @@ import {
   Archive,
   Image as ImageIcon,
   CheckCircle2,
-  HardDrive
+  HardDrive,
+  RotateCcw
 } from 'lucide-react';
 import Button from './ui/Button';
 import { mongoService } from '../services/mongoService';
@@ -30,13 +31,15 @@ import { mongoService } from '../services/mongoService';
  */
 const PdfViewerModal = ({ isOpen, onClose, material, title, fileUrl, fileName, fileId }) => {
   const [loadError, setLoadError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [errorStatus, setErrorStatus] = useState(null);
   const [blobUrl, setBlobUrl] = useState('');
   const [loading, setLoading] = useState(true);
 
   const docTitle = title || material?.title || material?.fileName || fileName || 'Study Material Document';
   const docFileName = fileName || material?.fileName || `${docTitle}.pdf`;
-  const rawUrl = fileUrl || material?.downloadUrl || material?.fileUrl || material?.fileLink || '';
-  const docFileId = fileId || material?.fileId || material?.gridFsFileId || material?.id || '';
+  const rawUrl = fileUrl || material?.downloadUrl || material?.pdfLink || material?.fileUrl || material?.fileLink || '';
+  const docFileId = fileId || material?.gridFsFileId || material?.fileId || material?.id || '';
 
   const fileType = useMemo(() => {
     const name = (docFileName || '').toLowerCase();
@@ -49,6 +52,46 @@ const PdfViewerModal = ({ isOpen, onClose, material, title, fileUrl, fileName, f
     return 'generic';
   }, [docFileName]);
 
+  const loadDocument = async () => {
+    setLoading(true);
+    setLoadError(false);
+    setErrorMessage('');
+    setErrorStatus(null);
+
+    try {
+      const res = await mongoService.fetchFileBlob(docFileId, rawUrl);
+      if (res?.blobUrl) {
+        setBlobUrl(res.blobUrl);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
+        setErrorMessage('Unable to assemble document stream.');
+      }
+      setLoading(false);
+    } catch (err) {
+      console.warn('[PdfViewerModal] Fetch blob notice:', err);
+      if (rawUrl && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))) {
+        setBlobUrl(rawUrl);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
+        setErrorStatus(err.status || null);
+        if (err.status === 401) {
+          setErrorMessage('Authentication required. Please sign in to view this curriculum material.');
+        } else if (err.status === 403) {
+          setErrorMessage(err.message || 'Access restricted. You do not have permission to view this department or year document.');
+        } else if (err.status === 404) {
+          setErrorMessage('Document content could not be found in storage repository.');
+        } else if (err.status === 500) {
+          setErrorMessage('Server error encountered while retrieving the file. Please retry.');
+        } else {
+          setErrorMessage(err.message || 'Failed to load document content. Please check your network connection.');
+        }
+      }
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!isOpen) {
       if (blobUrl && blobUrl.startsWith('blob:')) {
@@ -56,44 +99,24 @@ const PdfViewerModal = ({ isOpen, onClose, material, title, fileUrl, fileName, f
       }
       setBlobUrl('');
       setLoadError(false);
+      setErrorMessage('');
+      setErrorStatus(null);
       setLoading(true);
       return;
     }
 
-    let isMounted = true;
-    setLoading(true);
-    setLoadError(false);
+    loadDocument();
+  }, [isOpen, rawUrl, docFileId]);
 
-    const loadDocument = async () => {
-      try {
-        const res = await mongoService.fetchFileBlob(docFileId, rawUrl);
-        if (isMounted) {
-          if (res?.blobUrl) {
-            setBlobUrl(res.blobUrl);
-          } else {
-            setLoadError(true);
-          }
-          setLoading(false);
-        }
-      } catch (err) {
-        console.warn('[PdfViewerModal] Fetch blob notice:', err);
-        if (isMounted) {
-          if (rawUrl && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))) {
-            setBlobUrl(rawUrl);
-          } else {
-            setLoadError(true);
-          }
-          setLoading(false);
-        }
+  useEffect(() => {
+    return () => {
+      if (blobUrl && blobUrl.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch (_) {}
       }
     };
-
-    loadDocument();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isOpen, rawUrl, docFileId]);
+  }, [blobUrl]);
 
   if (!isOpen) return null;
 
@@ -134,6 +157,51 @@ const PdfViewerModal = ({ isOpen, onClose, material, title, fileUrl, fileName, f
           <HardDrive size={36} color="var(--color-primary)" className="spin" />
           <div style={{ fontSize: 14, color: 'var(--color-text)', fontWeight: 600 }}>
             Streaming Document from MongoDB Storage...
+          </div>
+        </div>
+      );
+    }
+
+    if (loadError) {
+      return (
+        <div style={{
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '32px 24px',
+          background: 'var(--color-bg-card, #ffffff)',
+          textAlign: 'center',
+          gap: 16
+        }}>
+          <div style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            background: 'rgba(239, 68, 68, 0.1)',
+            color: '#ef4444',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            <AlertCircle size={36} />
+          </div>
+          <div>
+            <h3 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 700, color: 'var(--color-text)' }}>
+              Document Content Unavailable
+            </h3>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--color-text-muted)', maxWidth: 440, lineHeight: 1.5 }}>
+              {errorMessage || 'Document content could not be found. The file may be pending synchronization or restricted.'}
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+            <Button onClick={loadDocument} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <RotateCcw size={15} /> Retry
+            </Button>
+            <Button variant="secondary" onClick={handleDownload} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Download size={15} /> Try Download
+            </Button>
           </div>
         </div>
       );

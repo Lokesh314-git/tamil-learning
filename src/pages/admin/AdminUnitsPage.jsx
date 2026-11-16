@@ -105,14 +105,19 @@ const AdminUnitsPage = () => {
       ? 'All Departments'
       : (departments.find((d) => d.id === targetDeptId)?.name || 'General');
 
+    const verifiedFileId = data.gridFsFileId || data.fileId || '';
+    const verifiedDownloadUrl = data.downloadUrl || (data.pdfLink && data.pdfLink.startsWith('http') ? data.pdfLink : (verifiedFileId ? `${MONGO_CONFIG.endpoints.download}/${verifiedFileId}` : ''));
+
     const unitPayload = {
       unitNumber: unitNum,
       title: data.title || '',
-      fileId: data.fileId || data.gridFsFileId || '',
-      gridFsFileId: data.gridFsFileId || data.fileId || '',
-      pdfLink: data.fileId || data.pdfLink || '',
+      fileId: verifiedFileId,
+      gridFsFileId: verifiedFileId,
+      downloadUrl: verifiedDownloadUrl,
+      pdfLink: verifiedDownloadUrl,
       fileName: data.fileName || '',
       fileSize: Number(data.fileSize) || 0,
+      mimeType: data.mimeType || 'application/pdf',
       departmentId: targetDeptId || 'all',
       departmentName: targetDeptName || 'General',
       year: selectedYear || '1st Year',
@@ -120,7 +125,7 @@ const AdminUnitsPage = () => {
     };
 
     const cleanUnitPayload = Object.fromEntries(
-      Object.entries(unitPayload).filter(([_, v]) => v !== undefined)
+      Object.entries(unitPayload).filter(([_, v]) => v !== undefined && v !== null)
     );
 
     if (existing?.id || unitModal?.id) {
@@ -130,12 +135,12 @@ const AdminUnitsPage = () => {
         updatedAt: serverTimestamp(),
       });
       await mongoService.mirrorDocumentToMongo('units', idToUpdate, cleanUnitPayload);
-      if (data.pdfLink) {
+      if (verifiedDownloadUrl) {
         await mongoService.storeUploadedDocumentInMongo({
-          fileId: `unit_${idToUpdate}`,
+          fileId: verifiedFileId || `unit_${idToUpdate}`,
           title: `Unit ${unitNum}: ${data.title}`,
           fileName: data.fileName || `Unit_${unitNum}_Material.pdf`,
-          downloadUrl: data.pdfLink,
+          downloadUrl: verifiedDownloadUrl,
           category: 'curriculum_unit_pdf',
           unitNumber: unitNum,
           year: selectedYear,
@@ -152,12 +157,12 @@ const AdminUnitsPage = () => {
         updatedAt: serverTimestamp(),
       });
       await mongoService.mirrorDocumentToMongo('units', docRef.id, cleanUnitPayload);
-      if (data.pdfLink) {
+      if (verifiedDownloadUrl) {
         await mongoService.storeUploadedDocumentInMongo({
-          fileId: `unit_${docRef.id}`,
+          fileId: verifiedFileId || `unit_${docRef.id}`,
           title: `Unit ${unitNum}: ${data.title}`,
           fileName: data.fileName || `Unit_${unitNum}_Material.pdf`,
-          downloadUrl: data.pdfLink,
+          downloadUrl: verifiedDownloadUrl,
           category: 'curriculum_unit_pdf',
           unitNumber: unitNum,
           year: selectedYear,
@@ -280,10 +285,10 @@ const AdminUnitsPage = () => {
                   >
                     {u ? 'Edit Unit' : 'Configure Unit'}
                   </button>
-                  {u?.pdfLink && (
+                  {(u?.pdfLink || u?.downloadUrl || u?.fileId || u?.gridFsFileId) && (
                     <button
                       type="button"
-                      onClick={() => openOrDownloadFile(u.pdfLink, u.fileName || `Unit_${unitNum}_Syllabus.pdf`, u.fileId || u.id)}
+                      onClick={() => openOrDownloadFile(u.downloadUrl || u.pdfLink, u.fileName || `Unit_${unitNum}_Syllabus.pdf`, u.gridFsFileId || u.fileId || u.id)}
                       className="btn btn-secondary"
                       style={{ fontSize: 12, padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 4 }}
                     >
