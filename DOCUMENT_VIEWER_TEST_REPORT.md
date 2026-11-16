@@ -80,3 +80,4 @@
 | **4. Student Navigation** | Student opens "Units" -> clicks "Open Unit Notes"; `setViewingDoc` receives verified URL & ID. | **VERIFIED** |
 | **5. PDF Viewer Modal** | Modal fetches Blob via authenticated backend stream; displays PDF in iframe or image viewer; cleans up Blob URL on close. | **VERIFIED** |
 | **6. Error & Recovery** | If file missing or unmigrated, auto-heals from chunks or displays explicit error with Retry & Download actions. | **VERIFIED** |
+

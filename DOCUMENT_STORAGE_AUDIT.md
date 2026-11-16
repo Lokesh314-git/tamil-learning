@@ -102,3 +102,4 @@ This audit examines the end-to-end architecture across client components, servic
 3. **Role & Account Status:** Active account verification (`!isDeleted`, `status === 'active' || isApproved`).
 4. **Access Boundaries:** Document year and department filters enforced server-side before binary transmission.
 5. **Credentials Privacy:** MongoDB Atlas connection URI is confined to Cloud Functions environment variables / Secret Manager.
+

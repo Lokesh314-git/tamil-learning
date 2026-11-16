@@ -24,7 +24,7 @@ const createQuestion = (id, source) => ({
       : 0
 });
 
-const buildInitialForm = (initial, nextQuestionIdRef, defaultYear = '1st Year', defaultDeptId = 'all') => {
+const buildInitialForm = (initial, nextQuestionIdRef, defaultYear = 'All Years', defaultDeptId = 'all', departments = []) => {
   nextQuestionIdRef.current = 1;
   const sourceQuestions =
     Array.isArray(initial?.questions) && initial.questions.length > 0
@@ -35,10 +35,18 @@ const buildInitialForm = (initial, nextQuestionIdRef, defaultYear = '1st Year', 
     nextQuestionIdRef.current += 1;
     return createQuestion(id, question);
   });
+
+  let resolvedYear = initial?.year || defaultYear || 'All Years';
+  const resolvedDeptId = initial?.departmentId || defaultDeptId || 'all';
+  if ((!initial?.year || initial.year === '1st Year' || initial.year === 'All Years') && resolvedDeptId !== 'all') {
+    const matchingDept = departments.find((d) => d.id === resolvedDeptId);
+    if (matchingDept?.year) resolvedYear = matchingDept.year;
+  }
+
   return {
     title: initial?.title || '',
-    year: initial?.year || defaultYear || '1st Year',
-    departmentId: initial?.departmentId || defaultDeptId || 'all',
+    year: resolvedYear,
+    departmentId: resolvedDeptId,
     testType: initial?.testType || 'quiz',
     passMark: initial?.passMark || 40,
     unitNumber: Number(initial?.unitNumber) || 1,
@@ -181,19 +189,28 @@ const TestFormModal = ({
   selectedDepartmentId = 'all'
 }) => {
   const nextQuestionIdRef = useRef(1);
-  const [form, setForm] = useState(() => buildInitialForm(initial, nextQuestionIdRef, year, selectedDepartmentId));
+  const [form, setForm] = useState(() => buildInitialForm(initial, nextQuestionIdRef, year, selectedDepartmentId, departments));
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (open) {
-      setForm(buildInitialForm(initial, nextQuestionIdRef, year, selectedDepartmentId));
+      setForm(buildInitialForm(initial, nextQuestionIdRef, year, selectedDepartmentId, departments));
       setError('');
     }
-  }, [initial, open, year, selectedDepartmentId]);
+  }, [initial, open, year, selectedDepartmentId, departments]);
 
   const onFieldChange = useCallback((key, value) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-  }, []);
+    setForm((prev) => {
+      const updated = { ...prev, [key]: value };
+      if (key === 'departmentId' && value && value !== 'all') {
+        const matchingDept = departments.find((d) => d.id === value);
+        if (matchingDept?.year) {
+          updated.year = matchingDept.year;
+        }
+      }
+      return updated;
+    });
+  }, [departments]);
 
   const addQuestion = useCallback(() => {
     const newId = nextQuestionIdRef.current;

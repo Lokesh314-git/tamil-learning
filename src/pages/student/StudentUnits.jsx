@@ -120,7 +120,7 @@ const StudentUnits = () => {
       check();
     }, () => check());
 
-    // 4. Published Tests (filtered strictly by student's year)
+    // 4. Published Tests (filtered by student's department and year)
     const unsubTests = onSnapshot(collection(db, 'publishedTests'), (snap) => {
       const list = [];
       snap.forEach((d) => {
@@ -136,9 +136,15 @@ const StudentUnits = () => {
         const deptOk =
           !data.departmentId ||
           data.departmentId === 'all' ||
-          data.departmentId === profile.departmentId;
+          !profile.departmentId ||
+          data.departmentId === profile.departmentId ||
+          (data.departmentName && (data.departmentName === profile?.departmentName || data.departmentName === profile?.class));
 
-        if (yearOk && deptOk) {
+        const isDirectDeptMatch =
+          Boolean(data.departmentId && data.departmentId !== 'all' && profile.departmentId && data.departmentId === profile.departmentId) ||
+          Boolean(data.departmentName && (data.departmentName === profile?.departmentName || data.departmentName === profile?.class));
+
+        if (isDirectDeptMatch || (yearOk && deptOk)) {
           list.push({ id: d.id, ...data });
         }
       });

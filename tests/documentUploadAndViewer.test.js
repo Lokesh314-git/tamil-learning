@@ -194,4 +194,88 @@ describe('Document Upload, Metadata & Student Viewer Tests', () => {
     assert.equal(getFriendlyErrorMessage(500).includes('Server error'), true);
     assert.equal(getFriendlyErrorMessage(0).includes('check your network connection'), true);
   });
+
+  // 8. Student Online Assessment Visibility Verification
+  test('8. Student Online Assessment Visibility logic correctly resolves matching tests', () => {
+    function isTestVisibleToStudent(test, studentProfile, currentRouteYear) {
+      const studentYear = currentRouteYear || studentProfile?.year || '1st Year';
+      const studentDeptId = studentProfile?.departmentId;
+      const testYear = test.year || 'All Years';
+
+      const isYearMatch =
+        testYear === 'All Years' ||
+        testYear === 'All' ||
+        testYear === 'all' ||
+        testYear.toLowerCase() === studentYear.toLowerCase() ||
+        (studentProfile?.year && testYear.toLowerCase() === studentProfile.year.toLowerCase());
+
+      const isDeptMatch =
+        !test.departmentId ||
+        test.departmentId === 'all' ||
+        !studentDeptId ||
+        test.departmentId === studentDeptId ||
+        (test.departmentName && (test.departmentName === studentProfile?.departmentName || test.departmentName === studentProfile?.class));
+
+      const isDirectDeptMatch =
+        Boolean(test.departmentId && test.departmentId !== 'all' && studentDeptId && test.departmentId === studentDeptId) ||
+        Boolean(test.departmentName && (test.departmentName === studentProfile?.departmentName || test.departmentName === studentProfile?.class));
+
+      return isDirectDeptMatch || (isYearMatch && isDeptMatch);
+    }
+
+    const student = {
+      uid: 'stu-aiml-1',
+      name: 'Sathiyakumar',
+      year: '2nd Year',
+      departmentId: 'VSYl1VmKW2uNURI87rMu',
+      departmentName: 'B.Sc AIML'
+    };
+
+    // Test A: Explicitly assigned to B.Sc AIML (even if year label was 1st Year) -> VISIBLE
+    const testA = {
+      id: 'test-1',
+      title: 'Tamil Quiz 1',
+      year: '1st Year',
+      departmentId: 'VSYl1VmKW2uNURI87rMu',
+      departmentName: 'B.Sc AIML'
+    };
+    assert.equal(isTestVisibleToStudent(testA, student, '2nd Year'), true);
+
+    // Test B: 2nd Year all departments -> VISIBLE
+    const testB = {
+      id: 'test-2',
+      title: 'Common 2nd Year Exam',
+      year: '2nd Year',
+      departmentId: 'all'
+    };
+    assert.equal(isTestVisibleToStudent(testB, student, '2nd Year'), true);
+
+    // Test C: All Years general test -> VISIBLE
+    const testC = {
+      id: 'test-3',
+      title: 'Tamil General Assessment',
+      year: 'All Years',
+      departmentId: 'all'
+    };
+    assert.equal(isTestVisibleToStudent(testC, student, '2nd Year'), true);
+
+    // Test D: Assigned to different department in 2nd Year (e.g. B.Com) -> NOT VISIBLE
+    const testD = {
+      id: 'test-4',
+      title: 'B.Com Specific Test',
+      year: '2nd Year',
+      departmentId: 'RCAq378rPVj56iKuNP19',
+      departmentName: 'R25 B.com'
+    };
+    assert.equal(isTestVisibleToStudent(testD, student, '2nd Year'), false);
+
+    // Test E: 1st Year general test with no department match -> NOT VISIBLE for 2nd Year
+    const testE = {
+      id: 'test-5',
+      title: '1st Year General Only',
+      year: '1st Year',
+      departmentId: 'all'
+    };
+    assert.equal(isTestVisibleToStudent(testE, student, '2nd Year'), false);
+  });
 });

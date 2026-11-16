@@ -527,16 +527,23 @@ export const NotificationBadgeProvider = ({ children }) => {
           tYear === 'All Years' ||
           tYear === 'All' ||
           tYear === 'all' ||
-          tYear.toLowerCase() === studentYear.toLowerCase();
+          tYear.toLowerCase() === studentYear.toLowerCase() ||
+          (profile?.year && tYear.toLowerCase() === profile.year.toLowerCase());
 
         const isDeptMatch =
           !t.departmentId ||
           t.departmentId === 'all' ||
           !studentDeptId ||
-          t.departmentId === studentDeptId;
+          t.departmentId === studentDeptId ||
+          (t.departmentName && (t.departmentName === profile?.departmentName || t.departmentName === profile?.class));
 
+        const isDirectDeptMatch =
+          Boolean(t.departmentId && t.departmentId !== 'all' && studentDeptId && t.departmentId === studentDeptId) ||
+          Boolean(t.departmentName && (t.departmentName === profile?.departmentName || t.departmentName === profile?.class));
+
+        const isVisible = isDirectDeptMatch || (isYearMatch && isDeptMatch);
         const isNotAttempted = !attemptedTestIds.has(t.id) && !attemptedTestIds.has(t.title);
-        return isYearMatch && isDeptMatch && isNotAttempted;
+        return isVisible && isNotAttempted;
       });
 
       setStudentCounts((prev) => ({ ...prev, tests: unattempted.length }));
@@ -568,19 +575,29 @@ export const NotificationBadgeProvider = ({ children }) => {
       setStudentCounts((prev) => ({ ...prev, tasks: unsubmitted.length }));
     };
 
-    // 1. Online Tests
+    // 1. Online Tests (query publishedTests collection accessible to students)
     try {
-      unsubs.push(onSnapshot(collection(db, 'tests'), (snap) => {
+      unsubs.push(onSnapshot(collection(db, 'publishedTests'), (snap) => {
         const list = [];
         snap.docChanges().forEach((change) => {
           const t = change.doc.data();
           const docId = change.doc.id;
           const tYear = t.year || 'All Years';
-          const isYearMatch = tYear === 'All Years' || tYear === 'all' || tYear.toLowerCase() === studentYear.toLowerCase();
+          const isYearMatch =
+            tYear === 'All Years' ||
+            tYear === 'all' ||
+            tYear.toLowerCase() === studentYear.toLowerCase() ||
+            (profile?.year && tYear.toLowerCase() === profile.year.toLowerCase());
+
+          const isDirectDeptMatch =
+            Boolean(t.departmentId && t.departmentId !== 'all' && studentDeptId && t.departmentId === studentDeptId) ||
+            Boolean(t.departmentName && (t.departmentName === profile?.departmentName || t.departmentName === profile?.class));
+
+          const isEligible = isDirectDeptMatch || isYearMatch;
 
           if (isInitialTests) {
             knownDocIds.current.add(docId);
-          } else if (change.type === 'added' && !knownDocIds.current.has(docId) && isYearMatch) {
+          } else if (change.type === 'added' && !knownDocIds.current.has(docId) && isEligible) {
             knownDocIds.current.add(docId);
             addToast({
               type: 'test',

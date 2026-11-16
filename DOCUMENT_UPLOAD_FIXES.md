@@ -109,3 +109,4 @@ Enhanced `GET /api/materials/download/:id`:
   - `Content-Disposition: inline; filename="..."`
   - `Content-Length: <size>`
   - `Cache-Control: public, max-age=86400, s-maxage=86400`
+

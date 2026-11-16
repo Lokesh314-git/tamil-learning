@@ -81,9 +81,15 @@ const StudentTests = () => {
           !data.departmentId ||
           data.departmentId === 'all' ||
           !studentDeptId ||
-          data.departmentId === studentDeptId;
+          data.departmentId === studentDeptId ||
+          (data.departmentName && (data.departmentName === profile?.departmentName || data.departmentName === profile?.class));
 
-        if (isYearMatch && isDeptMatch) {
+        // Direct department match: if assigned specifically to the student's department or class
+        const isDirectDeptMatch =
+          Boolean(data.departmentId && data.departmentId !== 'all' && studentDeptId && data.departmentId === studentDeptId) ||
+          Boolean(data.departmentName && (data.departmentName === profile?.departmentName || data.departmentName === profile?.class));
+
+        if (isDirectDeptMatch || (isYearMatch && isDeptMatch)) {
           list.push({ id: d.id, ...data });
         }
       });

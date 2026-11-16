@@ -80,3 +80,4 @@ After running the recovery process, verify the following in Firestore Console or
 - [x] Unit documents have `downloadUrl` and `pdfLink` formatted as `https://us-central1-tamil-learning-9f609.cloudfunctions.net/api/materials/download/<id>`.
 - [x] Student portal opens the unit document in `PdfViewerModal` without error.
 - [x] `mongo_file_chunks` records can be archived or safely purged after verification.
+

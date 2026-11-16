@@ -149,7 +149,7 @@ const StudentDashboard = () => {
   const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    if (!year || !user || !profile?.departmentId) return;
+    if (!user) return;
 
     setLoadError('');
     const unsubscribers = [];
@@ -158,21 +158,35 @@ const StudentDashboard = () => {
       console.warn('Dashboard listener error:', err);
     };
 
-    const deptMatch = (data) => {
-      return !data.departmentId || data.departmentId === 'all' || data.departmentId === profile.departmentId;
-    };
-
+    const studentDeptId = profile?.departmentId;
     const studentYear = year || profile?.year || '1st Year';
 
+    const deptMatch = (data) => {
+      return (
+        !data.departmentId ||
+        data.departmentId === 'all' ||
+        !studentDeptId ||
+        data.departmentId === studentDeptId ||
+        (data.departmentName && (data.departmentName === profile?.departmentName || data.departmentName === profile?.class))
+      );
+    };
+
+    const isDirectDeptMatch = (data) => {
+      return Boolean(
+        (data.departmentId && data.departmentId !== 'all' && studentDeptId && data.departmentId === studentDeptId) ||
+        (data.departmentName && (data.departmentName === profile?.departmentName || data.departmentName === profile?.class))
+      );
+    };
+
     // 1. Units
-    const qUnits = query(collection(db, 'units'), where('year', '==', year));
+    const qUnits = query(collection(db, 'units'), where('year', '==', studentYear));
     unsubscribers.push(onSnapshot(qUnits, (snap) => {
       let count = 0;
       snap.forEach((d) => { if (deptMatch(d.data())) count++; });
       setCounts((c) => ({ ...c, units: count }));
     }, onListenError));
 
-    // 2. Published Tests (matches student's year or All Years)
+    // 2. Published Tests (matches student's department, year or All Years)
     unsubscribers.push(onSnapshot(collection(db, 'publishedTests'), (snap) => {
       let count = 0;
       snap.forEach((d) => {
@@ -185,7 +199,7 @@ const StudentDashboard = () => {
           testYear.toLowerCase() === studentYear.toLowerCase() ||
           (profile?.year && testYear.toLowerCase() === profile.year.toLowerCase());
 
-        if (yearOk && deptMatch(data)) count++;
+        if (isDirectDeptMatch(data) || (yearOk && deptMatch(data))) count++;
       });
       setCounts((c) => ({ ...c, tests: count }));
     }, onListenError));

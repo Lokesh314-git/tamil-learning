@@ -149,10 +149,14 @@ const AdminTestsPage = () => {
       const selectedDept = departments.find((d) => d.id === data.departmentId);
       const departmentName = data.departmentId === 'all' ? 'All Classes' : (selectedDept?.name || 'General');
 
+      const resolvedYear = (selectedDept && selectedDept.year && data.departmentId !== 'all')
+        ? selectedDept.year
+        : (data.year || (selectedYear !== 'All' ? selectedYear : 'All Years'));
+
       let savedId = testFormModal?.id;
       const testPayload = {
         ...data,
-        year: data.year || '1st Year',
+        year: resolvedYear,
         departmentId: data.departmentId || 'all',
         departmentName,
         testType: data.testType || 'quiz',
@@ -419,7 +423,7 @@ const AdminTestsPage = () => {
       <TestFormModal
         open={Boolean(testFormModal)}
         initial={testFormModal && testFormModal.id ? testFormModal : null}
-        year={selectedYear !== 'All' ? selectedYear : '1st Year'}
+        year={selectedYear !== 'All' ? selectedYear : 'All Years'}
         departments={departments}
         selectedDepartmentId="all"
         onClose={() => setTestFormModal(null)}
